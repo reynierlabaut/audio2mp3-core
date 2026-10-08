@@ -75,7 +75,48 @@ int32_t audio2mp3_encoder_flush(Audio2Mp3Encoder *enc,
 /* Acepta NULL. */
 void audio2mp3_encoder_destroy(Audio2Mp3Encoder *enc);
 
-/* TODO(fase1): API del converter (feature pcm-convert), spec §12. */
+/* ------------------------------------------------------------------
+ * Converter (solo con la feature pcm-convert): PCM del decoder (S16/F32,
+ * 1-8 canales en orden WAVE, 8000-192000 Hz) -> S16 intercalado de 1-2
+ * canales a 32000/44100/48000 Hz, listo para el encoder.
+ * Los bloques de entrada pueden cortar una muestra a la mitad.
+ * ------------------------------------------------------------------ */
+
+#define AUDIO2MP3_FORMAT_S16 0
+#define AUDIO2MP3_FORMAT_F32 1
+
+typedef struct Audio2Mp3Converter Audio2Mp3Converter;
+
+/* in_format: AUDIO2MP3_FORMAT_S16 | AUDIO2MP3_FORMAT_F32 (orden de bytes
+ * nativo); otro valor -> INVALID_INPUT. En caso de error *out_conv = NULL. */
+int32_t audio2mp3_converter_create(uint32_t in_rate, uint8_t in_channels,
+                                   uint8_t in_format,
+                                   Audio2Mp3Converter **out_conv);
+
+/* Tasa y canales de salida. 0 si c es NULL. */
+uint32_t audio2mp3_converter_out_rate(const Audio2Mp3Converter *c);
+uint8_t audio2mp3_converter_out_channels(const Audio2Mp3Converter *c);
+
+/* Máximo de muestras (intercaladas) que escribe process con in_bytes bytes. */
+size_t audio2mp3_converter_max_output_samples(const Audio2Mp3Converter *c,
+                                              size_t in_bytes);
+
+/* Máximo de muestras que escribe flush. */
+size_t audio2mp3_converter_max_flush_samples(const Audio2Mp3Converter *c);
+
+/* out_capacity y *out_written en muestras int16_t; out alineado a 2 bytes. */
+int32_t audio2mp3_converter_process(Audio2Mp3Converter *c,
+                                    const uint8_t *in, size_t in_bytes,
+                                    int16_t *out, size_t out_capacity,
+                                    size_t *out_written);
+
+/* Emite las muestras retenidas por el filtro y termina el converter. */
+int32_t audio2mp3_converter_flush(Audio2Mp3Converter *c,
+                                  int16_t *out, size_t out_capacity,
+                                  size_t *out_written);
+
+/* Acepta NULL. */
+void audio2mp3_converter_destroy(Audio2Mp3Converter *c);
 
 #ifdef __cplusplus
 }

@@ -7,7 +7,7 @@ PCM S16 interleaved ──► audio2mp3-core ──► frames MP3
 ```
 
 > Estado: Fase 1 funcional (CBR, bloques largos, sin bit reservoir ni psicoacústica),
-> con API C (`include/audio2mp3.h`) y puente JNI. Falta: `pcm-convert` y scripts de
+> con `pcm-convert`, API C (`include/audio2mp3.h`) y puente JNI. Falta: scripts de
 > build de Android/iOS.
 
 ## Uso (Rust)
@@ -40,6 +40,13 @@ Los buffers los reserva el llamador; Rust solo reserva el handle.
 La declaración Kotlin correspondiente (`expo.modules.audio2mp3.NativeEncoder`) está
 en la documentación de `crates/audio2mp3-jni/src/lib.rs`. Usa `ByteBuffer` directos
 (sin copias); `encode`/`flush` devuelven los bytes escritos o `−código` de error.
+
+## Pendientes conocidos
+
+- TODO(fase1): tamaño de `libaudio2mp3.so` arm64-v8a = 285 KB con el converter, objetivo ≤ 200 KB (spec §16).
+  `opt-level = "z"` no lo reduce; el 70 % es `.text`, probablemente de `std`
+  (formateo, panics/unwind). Medir con `cargo bloat` y valorar quitar bounds checks
+  en caminos calientes o `-Z build-std` con `panic_abort` (nightly).
 
 ## Estructura
 

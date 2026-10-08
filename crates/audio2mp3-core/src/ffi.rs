@@ -113,22 +113,40 @@ pub unsafe extern "C" fn audio2mp3_encoder_delay_samples(enc: *const Audio2Mp3En
     unsafe { enc.as_ref() }.map_or(0, |e| e.inner.delay_samples())
 }
 
-/// Convierte el buffer de salida del llamador en slice.
+/// Convierte un buffer de salida del llamador en slice.
 ///
 /// # Safety
-/// `out` debe ser válido para escribir `capacity` bytes (o NULL con capacity 0).
-unsafe fn out_slice<'a>(out: *mut u8, capacity: usize) -> Result<&'a mut [u8], i32> {
+/// `out` debe ser válido para escribir `capacity` elementos (o NULL con capacity 0).
+unsafe fn out_slice<'a, T>(out: *mut T, capacity: usize) -> Result<&'a mut [T], i32> {
     if capacity == 0 {
         return Ok(&mut []);
     }
     if out.is_null() {
         return Err(AUDIO2MP3_ERR_NULL_POINTER);
     }
-    if capacity > isize::MAX as usize {
+    if !out.is_aligned() || capacity > isize::MAX as usize / size_of::<T>() {
         return Err(AUDIO2MP3_ERR_INVALID_INPUT);
     }
-    // SAFETY: no nulo, tamaño acotado y válido para escritura según el contrato.
+    // SAFETY: no nulo, alineado, tamaño acotado y válido para escritura según el contrato.
     Ok(unsafe { core::slice::from_raw_parts_mut(out, capacity) })
+}
+
+/// Convierte un buffer de entrada del llamador en slice.
+///
+/// # Safety
+/// `input` debe ser válido para leer `len` elementos (o NULL con len 0).
+unsafe fn in_slice<'a, T>(input: *const T, len: usize) -> Result<&'a [T], i32> {
+    if len == 0 {
+        return Ok(&[]);
+    }
+    if input.is_null() {
+        return Err(AUDIO2MP3_ERR_NULL_POINTER);
+    }
+    if !input.is_aligned() || len > isize::MAX as usize / size_of::<T>() {
+        return Err(AUDIO2MP3_ERR_INVALID_INPUT);
+    }
+    // SAFETY: no nulo, alineado, tamaño acotado y legible según el contrato.
+    Ok(unsafe { core::slice::from_raw_parts(input, len) })
 }
 
 /// Escribe el resultado de una llamada en `out_written` y devuelve el código.
@@ -163,18 +181,9 @@ pub unsafe extern "C" fn audio2mp3_encoder_encode(
         return AUDIO2MP3_ERR_NULL_POINTER;
     }
     let result = (|| {
-        let samples: &[i16] = if num_samples == 0 {
-            &[]
-        } else if pcm.is_null() {
-            return Err(AUDIO2MP3_ERR_NULL_POINTER);
-        } else if !pcm.is_aligned() || num_samples > isize::MAX as usize / 2 {
-            return Err(AUDIO2MP3_ERR_INVALID_INPUT);
-        } else {
-            // SAFETY: no nulo, alineado, tamaño acotado y legible según el contrato.
-            unsafe { core::slice::from_raw_parts(pcm, num_samples) }
-        };
         // SAFETY: según el contrato de esta función.
-        let out = unsafe { out_slice(out, out_capacity) }?;
+        let (samples, out) =
+            unsafe { (in_slice(pcm, num_samples)?, out_slice(out, out_capacity)?) };
         // SAFETY: handle vivo y sin uso concurrente según el contrato.
         let encoder = unsafe { &mut (*enc).inner };
         encoder.encode_into(samples, out).map_err(error_code)
@@ -218,6 +227,11 @@ pub unsafe extern "C" fn audio2mp3_encoder_destroy(enc: *mut Audio2Mp3Encoder) {
     }
 }
 
+#[cfg(feature = "pcm-convert")]
+mod converter;
+#[cfg(feature = "pcm-convert")]
+pub use converter::*;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,6 +262,9 @@ mod tests {
             ("AUDIO2MP3_ERR_FINISHED", AUDIO2MP3_ERR_FINISHED),
             ("AUDIO2MP3_ERR_NULL_POINTER", AUDIO2MP3_ERR_NULL_POINTER),
             ("AUDIO2MP3_ERR_INTERNAL", AUDIO2MP3_ERR_INTERNAL),
+            // Formatos de `audio2mp3_converter_create`.
+            ("AUDIO2MP3_FORMAT_S16", 0),
+            ("AUDIO2MP3_FORMAT_F32", 1),
         ];
         let defines: Vec<(&str, i32)> = HEADER
             .lines()
@@ -276,6 +293,14 @@ mod tests {
             "int32_t audio2mp3_encoder_encode(Audio2Mp3Encoder *enc,",
             "int32_t audio2mp3_encoder_flush(Audio2Mp3Encoder *enc,",
             "void audio2mp3_encoder_destroy(Audio2Mp3Encoder *enc);",
+            "int32_t audio2mp3_converter_create(uint32_t in_rate, uint8_t in_channels,",
+            "uint32_t audio2mp3_converter_out_rate(const Audio2Mp3Converter *c);",
+            "uint8_t audio2mp3_converter_out_channels(const Audio2Mp3Converter *c);",
+            "size_t audio2mp3_converter_max_output_samples(const Audio2Mp3Converter *c,",
+            "size_t audio2mp3_converter_max_flush_samples(const Audio2Mp3Converter *c);",
+            "int32_t audio2mp3_converter_process(Audio2Mp3Converter *c,",
+            "int32_t audio2mp3_converter_flush(Audio2Mp3Converter *c,",
+            "void audio2mp3_converter_destroy(Audio2Mp3Converter *c);",
         ] {
             assert!(HEADER.contains(f), "falta en el header: {f}");
         }

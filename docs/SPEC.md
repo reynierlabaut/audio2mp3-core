@@ -232,6 +232,16 @@ impl PcmConverter {
 
 - F32 → S16 con saturación (`clamp(-1.0, 1.0) * 32767`).
 
+### Decisiones de implementación
+
+- **Entrada**: 8 000–192 000 Hz y 1–8 canales; fuera de rango → `InvalidSampleRate` / `InvalidChannels`.
+- **Bloques que cortan una muestra**: los bytes sobrantes se guardan para la siguiente llamada; la salida es idéntica con cualquier troceo. `flush` descarta una trama incompleta.
+- **Tasas arbitrarias**: el kernel se tabula con 128 puntos por muestra de entrada y se interpola linealmente; el instante de cada salida se lleva con aritmética racional exacta (n·M/L). Memoria acotada para cualquier relación.
+- **Filtro**: 32 taps (a la tasa más baja), Blackman, corte 0.9·Nyquist. Medido: plano (SNR > 80 dB) hasta ~0.7·Nyquist, > 60 dB de atenuación por encima del Nyquist de salida. Ensanchar a 48 taps llevaría la banda plana a ~0.8.
+- **Sin retardo**: filtro simétrico; salida n en el instante n·M/L; tras `flush`, salida = ceil(entrada · L / M) tramas.
+- **Downmix**: pesos normalizados por la mayor suma de una salida (5.1: ÷ 2.414), nunca satura; 7 canales: centro trasero 0.5 a cada lado; 7.1: laterales y traseros como Ls/Rs.
+- **API**: se añade `max_flush_samples()` (y `audio2mp3_converter_max_flush_samples`) para dimensionar el buffer de `flush`.
+
 ## 10. Formato del frame (Fase 1)
 
 | Campo | Valor |

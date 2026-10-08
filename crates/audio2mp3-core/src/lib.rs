@@ -18,6 +18,8 @@
 
 mod bitstream;
 mod config;
+#[cfg(feature = "pcm-convert")]
+mod convert;
 mod encoder;
 mod error;
 #[cfg(feature = "ffi")]
@@ -31,5 +33,7 @@ mod quantize;
 mod tables;
 
 pub use config::{Bitrate, EncoderConfig};
+#[cfg(feature = "pcm-convert")]
+pub use convert::{output_rate, PcmConverter, SampleFormat, MAX_INPUT_CHANNELS};
 pub use encoder::Mp3Encoder;
 pub use error::Error;

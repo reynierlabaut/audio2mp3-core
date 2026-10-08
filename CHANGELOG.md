@@ -9,3 +9,6 @@
 - Tests de ida y vuelta con symphonia (dev-dependency) y `examples/encode.rs` (WAV → MP3).
 - API C (feature `ffi`) e `include/audio2mp3.h`; añade `audio2mp3_encoder_delay_samples`.
 - Puente JNI (`libaudio2mp3.so`) sin dependencias: `NativeEncoder` con `ByteBuffer` directos.
+- `pcm-convert`: `PcmConverter` (S16/F32, 1–8 canales, 8–192 kHz → S16 1–2 canales a
+  32/44.1/48 kHz) con downmix normalizado y resampler polifásico de 32 taps; API C
+  (`audio2mp3_converter_*`, añade `max_flush_samples`) y JNI (`converter*`, con `inOffset`).
