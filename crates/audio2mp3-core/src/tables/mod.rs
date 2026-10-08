@@ -1,10 +1,15 @@
 //! Tablas del estándar ISO/IEC 11172-3.
 //!
-//! Pendientes de transcribir desde el estándar (spec §2):
-//! - TODO(fase1): ventana de análisis C[0..511] (Anexo C, tabla C.1) → `window.rs`.
-//! - TODO(fase1): tablas Huffman 0–31 (Anexo B, tabla B.7) → `huffman.rs`.
+//! `window.rs` y `huffman.rs` son datos generados a partir de minimp3 (CC0);
+//! no se editan a mano. Su corrección la comprueban los tests de `tests.rs`
+//! de forma independiente de la fuente (ver spec §2).
 
+pub(crate) mod huffman;
 pub(crate) mod sfb;
+pub(crate) mod window;
+
+#[cfg(test)]
+mod tests;
 
 /// Coeficientes c_i de la reducción de aliasing (Anexo B, tabla B.9).
 pub(crate) const ALIAS_CI: [f32; 8] = [

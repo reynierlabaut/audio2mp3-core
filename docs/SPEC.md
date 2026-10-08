@@ -18,7 +18,9 @@ Es una biblioteca independiente de cualquier framework. Su primer consumidor es 
   - ISO/IEC 13818-3 (solo si en el futuro se añaden tasas bajas);
   - literatura técnica pública (papers, libros, documentación de formato).
 - **Prohibido** copiar, traducir o portar código de LAME, shine, FFmpeg u otros encoders con licencia GPL/LGPL.
-- Las tablas numéricas del estándar (ventanas, Huffman, bandas de scalefactors) se transcriben desde el estándar, no desde otro código fuente.
+- Las tablas numéricas del estándar (ventanas, Huffman, bandas de scalefactors) se transcriben desde el estándar o se **derivan de fuentes de dominio público (CC0)**, nunca de código GPL/LGPL. Solo se toman los datos, no el código.
+  - Ventana del filterbank y tablas Huffman: derivadas de minimp3 (CC0) con una herramienta externa de extracción; los archivos generados indican su origen y no se editan a mano.
+  - Toda tabla derivada se **verifica con tests independientes de la fuente**: códigos prefijo completos (Kraft), dimensiones y linbits, valores conocidos del estándar, simetría de la ventana y reconstrucción análisis + síntesis del estándar.
 
 ## 3. Prioridades
 

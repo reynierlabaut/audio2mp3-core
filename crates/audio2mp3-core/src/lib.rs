@@ -2,9 +2,8 @@
 //!
 //! PCM S16 interleaved ──► audio2mp3-core ──► frames MP3
 //!
-//! Estado (Fase 1): bitstream, cabecera/side info, MDCT, aliasing,
-//! cuantización y partición listos. Pendientes:
-//! - TODO(fase1): ventana de análisis y tablas Huffman (ver `tables`).
+//! Estado (Fase 1): bitstream, cabecera/side info, filterbank, MDCT,
+//! aliasing, cuantización, partición y tablas listos. Pendientes:
 //! - TODO(fase1): `huffman.rs` (selección de tablas, conteo y escritura).
 //! - TODO(fase1): `encoder.rs` (`Mp3Encoder`, buffer de 1152 muestras,
 //!   inversión de frecuencia de subbandas impares antes de la MDCT, rate loop).

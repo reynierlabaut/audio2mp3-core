@@ -33,3 +33,5 @@ Bajo cualquiera de estas, a tu elección:
 - MIT ([LICENSE-MIT](LICENSE-MIT))
 
 Implementación clean-room a partir de ISO/IEC 11172-3. No contiene código de LAME, shine, FFmpeg ni otros encoders GPL/LGPL.
+
+La ventana del filterbank y las tablas Huffman (`crates/audio2mp3-core/src/tables/{window,huffman}.rs`) son datos derivados de [minimp3](https://github.com/lieff/minimp3) (CC0, dominio público) y verificados por tests independientes de esa fuente.
