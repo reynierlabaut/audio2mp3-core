@@ -1,0 +1,17 @@
+[package]
+name = "audio2mp3-core"
+description = "Encoder MP3 (MPEG-1 Layer III) pequeño y sin dependencias"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[features]
+default = []
+ffi = []
+pcm-convert = []
+
+[dependencies]
+# vacío: cero dependencias de runtime (spec §6)

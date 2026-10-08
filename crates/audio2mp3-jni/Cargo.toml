@@ -1,0 +1,14 @@
+[package]
+name = "audio2mp3-jni"
+description = "Puente JNI de audio2mp3-core para Android (libaudio2mp3.so)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "audio2mp3"
+crate-type = ["cdylib"]
+
+[dependencies]
+audio2mp3-core = { path = "../audio2mp3-core", features = ["pcm-convert"] }
