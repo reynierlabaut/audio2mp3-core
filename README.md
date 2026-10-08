@@ -6,8 +6,9 @@ Encoder MP3 (MPEG-1 Layer III) escrito en Rust: pequeño, sin dependencias de ru
 PCM S16 interleaved ──► audio2mp3-core ──► frames MP3
 ```
 
-> Estado: Fase 1 funcional (CBR, bloques largos, sin bit reservoir ni psicoacústica).
-> Falta: FFI C, puente JNI, `pcm-convert` y builds de Android/iOS.
+> Estado: Fase 1 funcional (CBR, bloques largos, sin bit reservoir ni psicoacústica),
+> con API C (`include/audio2mp3.h`) y puente JNI. Falta: `pcm-convert` y scripts de
+> build de Android/iOS.
 
 ## Uso (Rust)
 
@@ -26,6 +27,19 @@ Prueba manual con un WAV de 16 bits:
 ```sh
 cargo run --release --example encode -- entrada.wav salida.mp3 192
 ```
+
+## API C
+
+Feature `ffi`. Contrato completo en [`include/audio2mp3.h`](include/audio2mp3.h):
+`audio2mp3_encoder_create` → `encode` (las veces que haga falta) → `flush` → `destroy`.
+Los buffers los reserva el llamador; Rust solo reserva el handle.
+
+## Android (JNI)
+
+`crates/audio2mp3-jni` genera `libaudio2mp3.so`, sin dependencias aparte del core.
+La declaración Kotlin correspondiente (`expo.modules.audio2mp3.NativeEncoder`) está
+en la documentación de `crates/audio2mp3-jni/src/lib.rs`. Usa `ByteBuffer` directos
+(sin copias); `encode`/`flush` devuelven los bytes escritos o `−código` de error.
 
 ## Estructura
 

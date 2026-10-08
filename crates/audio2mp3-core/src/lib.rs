@@ -20,6 +20,9 @@ mod bitstream;
 mod config;
 mod encoder;
 mod error;
+#[cfg(feature = "ffi")]
+#[allow(unsafe_code)]
+pub mod ffi;
 mod filterbank;
 mod frame;
 mod huffman;

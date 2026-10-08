@@ -312,6 +312,8 @@ int32_t audio2mp3_encoder_flush(Audio2Mp3Encoder *enc,
                                 uint8_t *out, size_t out_capacity,
                                 size_t *out_written);
 
+uint32_t audio2mp3_encoder_delay_samples(const Audio2Mp3Encoder *enc); /* añadida en la implementación */
+
 void    audio2mp3_encoder_destroy(Audio2Mp3Encoder *enc); /* acepta NULL */
 
 /* Solo con feature pcm-convert */
@@ -348,6 +350,8 @@ void    audio2mp3_converter_destroy(Audio2Mp3Converter *c);
 ### JNI (Android)
 
 Crate aparte en el workspace: `audio2mp3-jni`. Exporta las funciones `Java_…` que llaman a la API C/Rust usando **`DirectByteBuffer`** (sin copias de arrays). Las declaraciones JNI se escriben a mano o con `jni-sys` (solo tipos, sin código de runtime). Así el `.so` final es uno solo y el consumidor **no compila C ni Rust**.
+
+Implementado con declaraciones a mano (sin dependencias; `jni-sys` 0.4 arrastra proc-macros). Interfaz Kotlin: `object NativeEncoder` con métodos `@JvmStatic external` (`validate`, `create`, `maxOutputSize`, `maxFlushSize`, `delaySamples`, `encode`, `flush`, `destroy`, `version`); la firma exacta está en `crates/audio2mp3-jni/src/lib.rs`. Errores: `create` devuelve 0 si la configuración no es válida (`validate` da el código); `encode`/`flush` devuelven bytes escritos o `−código`.
 
 ## 13. Estructura del repositorio
 
