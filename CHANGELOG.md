@@ -12,3 +12,5 @@
 - `pcm-convert`: `PcmConverter` (S16/F32, 1–8 canales, 8–192 kHz → S16 1–2 canales a
   32/44.1/48 kHz) con downmix normalizado y resampler polifásico de 32 taps; API C
   (`audio2mp3_converter_*`, añade `max_flush_samples`) y JNI (`converter*`, con `inOffset`).
+- `scripts/build-android.{sh,ps1}`: 3 ABIs con el NDK (sin cargo-ndk), verificación de
+  alineado a 16 KB y de símbolos JNI, zip + `SHA256SUMS` para la release.

@@ -7,8 +7,8 @@ PCM S16 interleaved ──► audio2mp3-core ──► frames MP3
 ```
 
 > Estado: Fase 1 funcional (CBR, bloques largos, sin bit reservoir ni psicoacústica),
-> con `pcm-convert`, API C (`include/audio2mp3.h`) y puente JNI. Falta: scripts de
-> build de Android/iOS.
+> con `pcm-convert`, API C (`include/audio2mp3.h`), puente JNI y build de Android.
+> Falta: build de iOS (XCFramework).
 
 ## Uso (Rust)
 
@@ -61,8 +61,30 @@ scripts/                Builds de Android (cargo-ndk) e iOS (XCFramework)
 
 ```sh
 cargo build
-cargo test
-cargo clippy --all-targets -- -D warnings
+cargo test --workspace --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+```
+
+## Build de Android
+
+Requiere rustup y el NDK (lo busca en `ANDROID_NDK_HOME`, `ANDROID_NDK_ROOT` o el más
+reciente de `$ANDROID_HOME/ndk`). Instala los targets de Rust que falten.
+
+```sh
+scripts/build-android.sh            # Linux, macOS, CI (o Git Bash en Windows)
+.\scripts\build-android.ps1         # Windows PowerShell
+```
+
+Opciones: `--ndk <ruta>` / `-Ndk`, `--api 24` / `-Api` (minSdk), `--no-package` / `-NoPackage`.
+
+Compila `arm64-v8a`, `armeabi-v7a` y `x86_64`, **falla** si algún segmento LOAD no está
+alineado a 16 KB o si los símbolos `Java_*` exportados no coinciden con los de
+`audio2mp3-jni`, y deja:
+
+```text
+dist/android/jniLibs/<abi>/libaudio2mp3.so
+dist/audio2mp3-android-v<versión>.zip   (jniLibs/<abi>/libaudio2mp3.so)
+dist/SHA256SUMS
 ```
 
 ## Licencia
