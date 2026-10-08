@@ -6,7 +6,26 @@ Encoder MP3 (MPEG-1 Layer III) escrito en Rust: pequeño, sin dependencias de ru
 PCM S16 interleaved ──► audio2mp3-core ──► frames MP3
 ```
 
-> Estado: en desarrollo (Fase 1). Todavía no hay API utilizable.
+> Estado: Fase 1 funcional (CBR, bloques largos, sin bit reservoir ni psicoacústica).
+> Falta: FFI C, puente JNI, `pcm-convert` y builds de Android/iOS.
+
+## Uso (Rust)
+
+```rust
+use audio2mp3_core::{Bitrate, EncoderConfig, Mp3Encoder};
+
+let config = EncoderConfig { sample_rate: 44_100, channels: 2, bitrate: Bitrate::Kbps192 };
+let mut encoder = Mp3Encoder::new(config)?;
+let mut mp3 = Vec::new();
+encoder.encode(&pcm, &mut mp3)?; // PCM i16 intercalado, en bloques de cualquier tamaño
+encoder.flush(&mut mp3)?;
+```
+
+Prueba manual con un WAV de 16 bits:
+
+```sh
+cargo run --release --example encode -- entrada.wav salida.mp3 192
+```
 
 ## Estructura
 

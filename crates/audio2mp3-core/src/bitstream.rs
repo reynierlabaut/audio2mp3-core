@@ -17,11 +17,6 @@ impl<'a> BitWriter<'a> {
         self.bit_pos
     }
 
-    /// Bytes ocupados (el último puede estar incompleto).
-    pub fn byte_len(&self) -> usize {
-        self.bit_pos.div_ceil(8)
-    }
-
     /// Escribe los `bits` bits bajos de `value` (0..=32). `value` no puede
     /// tener bits por encima de `bits`. Los bytes se ponen a 0 al tocarlos
     /// por primera vez, así que el buffer no necesita venir limpio.
@@ -76,7 +71,6 @@ mod tests {
         w.write(0x1FF, 9).unwrap();
         w.write(0xABCD, 16).unwrap();
         assert_eq!(w.bit_len(), 28);
-        assert_eq!(w.byte_len(), 4);
         // 101 111111111 1010101111001101 0000
         assert_eq!(buf, [0b1011_1111, 0b1111_1010, 0b1011_1100, 0b1101_0000]);
     }

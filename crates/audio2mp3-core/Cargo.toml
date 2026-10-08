@@ -15,3 +15,7 @@ pcm-convert = []
 
 [dependencies]
 # vacío: cero dependencias de runtime (spec §6)
+
+[dev-dependencies]
+# Decoder independiente para los tests de ida y vuelta; no entra en el binario.
+symphonia = { version = "0.6.1", default-features = false, features = ["mp3"] }

@@ -2,29 +2,31 @@
 //!
 //! PCM S16 interleaved ──► audio2mp3-core ──► frames MP3
 //!
-//! Estado (Fase 1): bitstream, cabecera/side info, filterbank, MDCT,
-//! aliasing, cuantización, partición y tablas listos. Pendientes:
-//! - TODO(fase1): `huffman.rs` (selección de tablas, conteo y escritura).
-//! - TODO(fase1): `encoder.rs` (`Mp3Encoder`, buffer de 1152 muestras,
-//!   inversión de frecuencia de subbandas impares antes de la MDCT, rate loop).
+//! ```
+//! use audio2mp3_core::{Bitrate, EncoderConfig, Mp3Encoder};
+//!
+//! let config = EncoderConfig { sample_rate: 44_100, channels: 2, bitrate: Bitrate::Kbps192 };
+//! let mut encoder = Mp3Encoder::new(config)?;
+//! let pcm = vec![0i16; 44_100 * 2]; // 1 s de silencio estéreo
+//! let mut mp3 = Vec::new();
+//! encoder.encode(&pcm, &mut mp3)?;
+//! encoder.flush(&mut mp3)?;
+//! # Ok::<(), audio2mp3_core::Error>(())
+//! ```
 
 #![deny(unsafe_code)]
 
-// TODO(fase1): quitar los allow(dead_code) cuando `Mp3Encoder` conecte el pipeline.
-#[allow(dead_code)]
 mod bitstream;
 mod config;
+mod encoder;
 mod error;
-#[allow(dead_code)]
 mod filterbank;
-#[allow(dead_code)]
 mod frame;
-#[allow(dead_code)]
+mod huffman;
 mod mdct;
-#[allow(dead_code)]
 mod quantize;
-#[allow(dead_code)]
 mod tables;
 
 pub use config::{Bitrate, EncoderConfig};
+pub use encoder::Mp3Encoder;
 pub use error::Error;

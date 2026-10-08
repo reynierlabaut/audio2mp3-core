@@ -7,7 +7,8 @@ use crate::error::Error;
 /// Muestras por canal en un frame (dos granules de 576).
 pub(crate) const SAMPLES_PER_FRAME: usize = 1152;
 /// Cota global de longitud de frame: 320 kbps a 32 kHz con padding.
-pub(crate) const MAX_FRAME_LEN: usize = 1441;
+#[cfg(test)]
+const MAX_FRAME_LEN: usize = 1441;
 
 const HEADER_LEN: usize = 4;
 /// syncword (12) + ID=1 (MPEG-1) + layer=01 (III) + protection_bit=1 (sin CRC).
@@ -62,10 +63,6 @@ impl FrameLayout {
     /// Longitud máxima de un frame con esta configuración.
     pub fn max_frame_len(&self) -> usize {
         self.base_len + usize::from(self.frac != 0)
-    }
-
-    pub fn side_info_len(&self) -> usize {
-        self.side_info_len
     }
 
     /// Calcula el siguiente frame y avanza el acumulador de padding.
