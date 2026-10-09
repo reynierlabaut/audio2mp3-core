@@ -358,7 +358,8 @@ impl Mp3Encoder {
             let (head, tail) = input.split_at_mut(SUBBAND_LEN);
             head.copy_from_slice(prev);
             tail.copy_from_slice(current);
-            self.mdct.forward(&input, lines);
+            self.mdct
+                .forward(crate::mdct::BlockType::Normal, &input, lines);
             *prev = *current;
         }
         self.alias.apply(xr);
@@ -382,7 +383,7 @@ impl Mp3Encoder {
             for (ix_gr, codings_gr) in self.ix.iter_mut().zip(&mut codings) {
                 for (ix, coding) in ix_gr.iter_mut().zip(codings_gr) {
                     ix.fill(0);
-                    *coding = huffman::plan(ix, self.bands).ok_or(Error::Internal)?;
+                    *coding = huffman::plan(ix, self.bands, false).ok_or(Error::Internal)?;
                 }
             }
             return Ok((u8::MAX, codings));
@@ -453,7 +454,8 @@ impl Mp3Encoder {
             let channels = xr_gr.iter().zip(xr34_gr).zip(ix_gr).zip(codings_gr);
             for (((xr, xr34), ix), coding) in channels.take(self.channels) {
                 quantize(xr, xr34, gain, ix)?;
-                *coding = huffman::plan(ix, self.bands).filter(|c| c.bits <= MAX_GRANULE_BITS)?;
+                *coding =
+                    huffman::plan(ix, self.bands, false).filter(|c| c.bits <= MAX_GRANULE_BITS)?;
                 total += coding.bits;
                 if total > budget {
                     return None;

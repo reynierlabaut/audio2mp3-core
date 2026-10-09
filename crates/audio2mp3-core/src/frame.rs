@@ -3,6 +3,7 @@
 use crate::bitstream::BitWriter;
 use crate::config::{sample_rate_index, EncoderConfig};
 use crate::error::Error;
+use crate::mdct::BlockType;
 
 /// Muestras por canal en un frame (dos granules de 576).
 pub(crate) const SAMPLES_PER_FRAME: usize = 1152;
@@ -106,7 +107,7 @@ pub(crate) fn side_info_len(channels: u8) -> usize {
     }
 }
 
-/// Side info de un granule y canal (solo bloques largos en Fase 1).
+/// Side info de un granule y canal.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GranuleInfo {
     pub part2_3_length: u32,
@@ -114,6 +115,11 @@ pub(crate) struct GranuleInfo {
     pub big_values: u32,
     pub global_gain: u32,
     pub scalefac_compress: u32,
+    /// Distinto de `Normal` activa `window_switching_flag`: solo se escriben
+    /// `table_select[0..2]` y `subblock_gain` (sin mixed blocks), y las
+    /// regiones son implícitas (región 1 desde la línea 36).
+    pub block_type: BlockType,
+    pub subblock_gain: [u32; 3],
     pub table_select: [u32; 3],
     pub region0_count: u32,
     pub region1_count: u32,
@@ -124,7 +130,7 @@ pub(crate) struct GranuleInfo {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct SideInfo {
-    /// 0 en Fase 1 (sin bit reservoir).
+    /// Bytes de main data en frames anteriores (bit reservoir).
     pub main_data_begin: u32,
     pub scfsi: [[bool; 4]; 2],
     /// Indexado como `[granule][canal]`.
@@ -147,12 +153,24 @@ impl SideInfo {
                 w.write(gi.big_values, 9)?;
                 w.write(gi.global_gain, 8)?;
                 w.write(gi.scalefac_compress, 4)?;
-                w.write(0, 1)?; // window_switching_flag: bloques largos
-                for &table in &gi.table_select {
-                    w.write(table, 5)?;
+                if gi.block_type == BlockType::Normal {
+                    w.write(0, 1)?; // window_switching_flag
+                    for &table in &gi.table_select {
+                        w.write(table, 5)?;
+                    }
+                    w.write(gi.region0_count, 4)?;
+                    w.write(gi.region1_count, 3)?;
+                } else {
+                    w.write(1, 1)?; // window_switching_flag
+                    w.write(gi.block_type.code(), 2)?;
+                    w.write(0, 1)?; // mixed_block_flag
+                    for &table in gi.table_select.iter().take(2) {
+                        w.write(table, 5)?;
+                    }
+                    for &gain in &gi.subblock_gain {
+                        w.write(gain, 3)?;
+                    }
                 }
-                w.write(gi.region0_count, 4)?;
-                w.write(gi.region1_count, 3)?;
                 w.write(u32::from(gi.preflag), 1)?;
                 w.write(u32::from(gi.scalefac_scale), 1)?;
                 w.write(u32::from(gi.count1table_select), 1)?;

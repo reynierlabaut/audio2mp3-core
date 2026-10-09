@@ -8,6 +8,10 @@ use crate::quantize::{split_regions, Partition};
 use crate::tables::huffman::{PairTable, COUNT1_A, COUNT1_B, PAIR_TABLES};
 use crate::tables::sfb::LongBands;
 
+/// Inicio de la región 1 con conmutación de bloques (§2.4.2.7): banda larga
+/// 8 = 3 bandas cortas × 3 ventanas = línea 36 en las tres tasas.
+const SWITCHING_REGION1_START: usize = 36;
+
 /// Tablas sin linbits, de menor a mayor rango.
 const SMALL_TABLES: [usize; 13] = [1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15];
 /// Familias con linbits (mismos códigos, distinto `linbits` creciente).
@@ -105,20 +109,31 @@ fn quad_bits(table: &[(u8, u8); 16], q: &[i32; 4]) -> u32 {
 }
 
 /// Planifica la codificación de `ix`. `None` si algún valor excede las tablas.
-pub(crate) fn plan(ix: &[i32; GRANULE_LINES], bands: &LongBands) -> Option<Coding> {
+///
+/// Con `switching` (conmutación de bloques) las regiones son implícitas: la
+/// región 1 empieza en la línea 36 y no hay región 2 (`table_select[2] = 0`).
+pub(crate) fn plan(
+    ix: &[i32; GRANULE_LINES],
+    bands: &LongBands,
+    switching: bool,
+) -> Option<Coding> {
     let partition = Partition::of(ix);
     let bv_end = partition.big_values as usize * 2;
     let count1_end = partition.count1_end();
-    let (region0_count, region1_count) = if partition.big_values > 0 {
+    let (region0_count, region1_count) = if partition.big_values > 0 && !switching {
         split_regions(bands, partition.big_values)
     } else {
         (0, 0)
     };
     let bound = |i: usize| usize::from(bands.get(i).copied().unwrap_or(576)).min(bv_end);
-    let region_ends = [
-        bound(region0_count as usize + 1),
-        bound((region0_count + region1_count) as usize + 2),
-    ];
+    let region_ends = if switching {
+        [SWITCHING_REGION1_START.min(bv_end), bv_end]
+    } else {
+        [
+            bound(region0_count as usize + 1),
+            bound((region0_count + region1_count) as usize + 2),
+        ]
+    };
 
     let mut bits = 0;
     let mut table_select = [0; 3];
@@ -309,7 +324,12 @@ mod tests {
     }
 
     fn roundtrip(ix: &[i32; GRANULE_LINES]) -> Coding {
-        let coding = plan(ix, bands()).expect("plan");
+        roundtrip_with(ix, false);
+        roundtrip_with(ix, true)
+    }
+
+    fn roundtrip_with(ix: &[i32; GRANULE_LINES], switching: bool) -> Coding {
+        let coding = plan(ix, bands(), switching).expect("plan");
         let mut buf = [0u8; 4096];
         let mut w = BitWriter::new(&mut buf);
         write(&mut w, ix, &coding).unwrap();
@@ -369,6 +389,6 @@ mod tests {
     fn rejects_values_beyond_tables() {
         let mut ix = [0; GRANULE_LINES];
         ix[0] = crate::quantize::MAX_QUANT + 1;
-        assert!(plan(&ix, bands()).is_none());
+        assert!(plan(&ix, bands(), false).is_none());
     }
 }
