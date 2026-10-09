@@ -215,6 +215,131 @@ fn reservoir_carries_bits_from_easy_to_hard_frames() {
     assert!(snr > 55.0);
 }
 
+/// Golpes secos de ruido (tipo castañuela) cada 0.3 s sobre un tono bajo.
+/// Devuelve la señal y la posición de cada golpe.
+fn castanets(len: usize, channels: usize, sample_rate: u32) -> (Vec<i16>, Vec<usize>) {
+    let period = (0.3 * f64::from(sample_rate)) as usize;
+    let onsets: Vec<usize> = (period / 2..len - period / 2).step_by(period).collect();
+    let mut seed = 12345u32;
+    let mut pcm = Vec::with_capacity(len * channels);
+    for n in 0..len {
+        let t = n as f64 / f64::from(sample_rate);
+        let mut v = 0.01 * (2.0 * std::f64::consts::PI * 200.0 * t).sin();
+        if let Some(&onset) = onsets.iter().rev().find(|&&o| o <= n) {
+            let age = (n - onset) as f64 / f64::from(sample_rate);
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let noise = f64::from(seed >> 8) / f64::from(1u32 << 23) - 1.0;
+            v += 0.7 * noise * (-age / 0.015).exp();
+        }
+        for _ in 0..channels {
+            pcm.push((v * 32767.0) as i16);
+        }
+    }
+    (pcm, onsets)
+}
+
+/// `block_type` de cada granule y canal (0 si no hay conmutación).
+fn block_types(mp3: &[u8], channels: usize, frame_len: impl Fn(&[u8]) -> usize) -> Vec<u32> {
+    let bit = |data: &[u8], pos: usize| u32::from(data[pos / 8] >> (7 - pos % 8) & 1);
+    let bits =
+        |data: &[u8], pos: usize, n: usize| (0..n).fold(0, |acc, i| acc << 1 | bit(data, pos + i));
+    let prefix = if channels == 1 { 18 } else { 20 };
+    let mut types = Vec::new();
+    let mut pos = 0;
+    while pos + 36 <= mp3.len() {
+        let side = &mp3[pos + 4..];
+        for unit in 0..2 * channels {
+            // part2_3_length (12) + big_values (9) + global_gain (8) + scalefac_compress (4).
+            let at = prefix + unit * 59 + 33;
+            types.push(if bit(side, at) == 1 {
+                bits(side, at + 1, 2)
+            } else {
+                0
+            });
+        }
+        pos += frame_len(&mp3[pos..]);
+    }
+    types
+}
+
+/// Error entre `from` y `to` muestras antes de cada golpe respecto a la
+/// energía del golpe, en dB.
+fn pre_echo_db(
+    decoded: &[f32],
+    input: &[i16],
+    onsets: &[usize],
+    delay: usize,
+    from: usize,
+    to: usize,
+) -> f64 {
+    let (mut noise, mut burst) = (0f64, 0f64);
+    for &onset in onsets {
+        for n in onset - from..onset - to {
+            let x = f64::from(input[n]) / 32768.0;
+            noise += (f64::from(decoded[n + delay]) - x).powi(2);
+        }
+        for &x in &input[onset..onset + 1024] {
+            burst += (f64::from(x) / 32768.0).powi(2);
+        }
+    }
+    10.0 * (noise / burst).log10()
+}
+
+#[test]
+fn transients_use_short_blocks_and_limit_pre_echo() {
+    let (input, onsets) = castanets(2 * 44_100, 1, 44_100);
+    let (mp3, delay) = encode(&input, 44_100, 1, 128);
+    let types = block_types(&mp3, 1, |f| {
+        144 * 128_000 / 44_100 + usize::from(f[2] >> 1 & 1)
+    });
+    let short = types.iter().filter(|&&t| t == 2).count();
+    eprintln!(
+        "granules cortos: {short} de {} ({} golpes)",
+        types.len(),
+        onsets.len()
+    );
+    assert!(short >= onsets.len());
+    // Toda ventana start va seguida de bloques cortos y toda stop los sigue.
+    for pair in types.windows(2) {
+        assert!(pair[0] != 1 || pair[1] == 2, "start sin short: {pair:?}");
+        assert!(pair[1] != 3 || pair[0] == 2, "stop sin short: {pair:?}");
+    }
+    let out = decode(mp3);
+    assert_eq!(out.errors, 0);
+    // Medido (128 kbps), sin → con bloques cortos:
+    // 23 ms antes del golpe: −23.7 → −29.0 dB; de 23 a 10 ms antes (fuera
+    // del alcance de una ventana corta): −34.9 → −58.4 dB.
+    let near = pre_echo_db(&out.samples, &input, &onsets, delay as usize, 1024, 32);
+    let far = pre_echo_db(&out.samples, &input, &onsets, delay as usize, 1024, 448);
+    eprintln!("pre-eco 128 kbps: {near:.1} dB (23 ms), {far:.1} dB (23–10 ms) respecto al golpe");
+    assert!(
+        near < -27.0 && far < -55.0,
+        "pre-eco {near:.1} / {far:.1} dB"
+    );
+}
+
+#[test]
+fn transients_decode_in_every_mode() {
+    // Ráfagas de ruido blanco: casi incodificables a 64 kbps (medido 4.7 dB;
+    // 5.7 dB sin bloques cortos, que gastan algo más de bits).
+    for (rate, channels, kbps, min_snr) in [
+        (48_000, 2, 64, 3.0),
+        (32_000, 2, 320, 31.0),
+        (44_100, 2, 192, 27.0),
+    ] {
+        let (input, _) = castanets(rate as usize, usize::from(channels), rate);
+        let (mp3, delay) = encode(&input, rate, channels, kbps);
+        let out = decode(mp3);
+        assert_eq!(out.errors, 0, "{rate} Hz {channels} ch {kbps} kbps");
+        let snr = snr_db(&out.samples, &input, usize::from(channels), delay as usize);
+        eprintln!("castañuelas {rate} Hz {channels} ch {kbps} kbps: SNR {snr:.1} dB");
+        assert!(
+            snr > min_snr,
+            "{rate} Hz {channels} ch {kbps} kbps: {snr:.1} dB"
+        );
+    }
+}
+
 #[test]
 fn unbalanced_stereo_keeps_both_channels() {
     // Canal derecho 40 dB por debajo del izquierdo (y con otra melodía).

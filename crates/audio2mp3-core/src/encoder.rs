@@ -10,11 +10,36 @@ use crate::frame::{
     self, FrameLayout, GranuleInfo, SideInfo, MAX_FRAME_LEN, MAX_HEAD_LEN, SAMPLES_PER_FRAME,
 };
 use crate::huffman::{self, Coding};
-use crate::mdct::{AliasReduction, Mdct, GRANULE_LINES, SUBBAND_LEN};
+use crate::mdct::{AliasReduction, BlockType, Mdct, GRANULE_LINES, SUBBAND_LEN};
 use crate::quantize::{pow34, quantize};
 use crate::reservoir::{Assembler, MAX_PENDING};
-use crate::tables::sfb::{long_bands, LongBands};
+use crate::tables::sfb::{long_bands, short_bands, LongBands, ShortBands};
 use crate::tables::window::ANALYSIS_WINDOW;
+
+/// Muestras por canal en un granule.
+const GRANULE_SAMPLES: usize = SAMPLES_PER_FRAME / 2;
+
+/// Detector de transitorios: un intervalo de subbanda (32 muestras) es un
+/// ataque si su energía supera `ATTACK_RATIO` veces la media de los
+/// `ATTACK_HISTORY` anteriores más `ATTACK_FLOOR` (evita disparos en
+/// señales casi silenciosas). Se ignora la subbanda 0 (graves).
+const ATTACK_RATIO: f32 = 10.0;
+const ATTACK_HISTORY: usize = 6;
+const ATTACK_FLOOR: f32 = 1e-5;
+
+/// Granule analizado (filterbank) a la espera de la MDCT.
+#[derive(Clone, Copy)]
+struct Analyzed {
+    /// `[canal][subbanda][t]`, ya con la inversión de frecuencia.
+    sub: [[[f32; SUBBAND_LEN]; SUBBANDS]; 2],
+    /// Hay un ataque en el centro de la ventana de este granule.
+    attack: bool,
+}
+
+const EMPTY_GRANULE: Analyzed = Analyzed {
+    sub: [[[0.0; SUBBAND_LEN]; SUBBANDS]; 2],
+    attack: false,
+};
 
 /// Retardo del encoder en muestras por canal: filterbank (análisis +
 /// síntesis, 481) + MDCT/IMDCT (un granule, 576). Verificado en
@@ -39,21 +64,32 @@ const MAIN_DATA_CAP: usize = 511 + MAX_FRAME_LEN;
 
 /// Encoder MP3 MPEG-1 Layer III, CBR, en streaming.
 ///
-/// Usa bit reservoir y joint stereo M/S, así que la salida va unos frames
-/// por detrás de la entrada (`max_output_size` lo tiene en cuenta).
+/// Usa bit reservoir, joint stereo M/S y bloques cortos ante transitorios
+/// (con un granule de lookahead), así que la salida va unos frames por
+/// detrás de la entrada (`max_output_size` lo tiene en cuenta).
 /// Después de `new()`, `encode_into` y `flush_into` no reservan memoria.
 pub struct Mp3Encoder {
     channels: usize,
     bands: &'static LongBands,
+    short_bands: &'static ShortBands,
     layout: FrameLayout,
-    /// PCM pendiente, normalizado a [-1, 1), por canal.
-    pcm: [[f32; SAMPLES_PER_FRAME]; 2],
+    /// PCM del granule en curso, normalizado a [-1, 1), por canal.
+    pcm: [[f32; GRANULE_SAMPLES]; 2],
     pending: usize,
     /// Muestras por canal recibidas en total.
     consumed: u64,
     frames: u64,
     finished: bool,
     analysis: [Filterbank; 2],
+    /// Granules analizados: los dos del próximo frame y uno de lookahead.
+    queue: [Analyzed; 3],
+    queued: usize,
+    /// Energía de los intervalos 6..17 del granule anterior, por canal.
+    energy_history: [[f32; 12]; 2],
+    /// Tipo de bloque del último granule transformado.
+    last_block: BlockType,
+    /// Tipos de bloque del frame en curso.
+    block_types: [BlockType; 2],
     /// Muestras de subbanda del granule anterior, por canal y subbanda.
     overlap: [[[f32; SUBBAND_LEN]; SUBBANDS]; 2],
     mdct: Mdct,
@@ -75,12 +111,14 @@ impl Mp3Encoder {
     pub fn new(config: EncoderConfig) -> Result<Self, Error> {
         let layout = FrameLayout::new(&config)?;
         let bands = long_bands(config.sample_rate).ok_or(Error::InvalidSampleRate)?;
+        let short_bands = short_bands(config.sample_rate).ok_or(Error::InvalidSampleRate)?;
         let assembler = Assembler::new(layout.max_frame_len(), layout.min_main_data_len());
         Ok(Self {
             channels: usize::from(config.channels),
             bands,
+            short_bands,
             layout,
-            pcm: [[0.0; SAMPLES_PER_FRAME]; 2],
+            pcm: [[0.0; GRANULE_SAMPLES]; 2],
             pending: 0,
             consumed: 0,
             frames: 0,
@@ -89,6 +127,11 @@ impl Mp3Encoder {
                 Filterbank::new(&ANALYSIS_WINDOW),
                 Filterbank::new(&ANALYSIS_WINDOW),
             ],
+            queue: [EMPTY_GRANULE; 3],
+            queued: 0,
+            energy_history: [[0.0; 12]; 2],
+            last_block: BlockType::Normal,
+            block_types: [BlockType::Normal; 2],
             overlap: [[[0.0; SUBBAND_LEN]; SUBBANDS]; 2],
             mdct: Mdct::new(),
             alias: AliasReduction::new(),
@@ -106,7 +149,11 @@ impl Mp3Encoder {
     /// frames retenidos por el bit reservoir).
     pub fn max_output_size(&self, num_samples: usize) -> usize {
         let per_channel = num_samples / self.channels;
-        let frames = self.pending.saturating_add(per_channel) / SAMPLES_PER_FRAME;
+        let granules = self
+            .queued
+            .saturating_add(self.pending.saturating_add(per_channel) / GRANULE_SAMPLES);
+        // Cada frame necesita sus dos granules más uno de lookahead.
+        let frames = granules.saturating_sub(1) / 2;
         frames
             .saturating_add(self.assembler.pending())
             .saturating_mul(self.layout.max_frame_len())
@@ -114,8 +161,9 @@ impl Mp3Encoder {
 
     /// Tamaño máximo que puede producir `flush_into`.
     pub fn max_flush_size(&self) -> usize {
-        // pendiente (< 1152) + retardo (< 1152) caben en dos frames, más los retenidos.
-        (2 + MAX_PENDING) * self.layout.max_frame_len()
+        // Granules en cola y pendiente (< 1728) + retardo (< 1152) caben en
+        // tres frames, más los retenidos por el reservoir.
+        (3 + MAX_PENDING) * self.layout.max_frame_len()
     }
 
     /// Delay del encoder en muestras por canal.
@@ -140,8 +188,8 @@ impl Mp3Encoder {
                 *pcm.get_mut(self.pending).ok_or(Error::Internal)? = f32::from(s) / 32768.0;
             }
             self.pending += 1;
-            if self.pending == SAMPLES_PER_FRAME {
-                written += self.encode_frame(out.get_mut(written..).ok_or(Error::Internal)?)?;
+            if self.pending == GRANULE_SAMPLES {
+                written += self.push_granule(out.get_mut(written..).ok_or(Error::Internal)?)?;
             }
         }
         self.consumed += (samples.len() / self.channels) as u64;
@@ -170,7 +218,7 @@ impl Mp3Encoder {
                     .ok_or(Error::Internal)?
                     .fill(0.0);
             }
-            written += self.encode_frame(out.get_mut(written..).ok_or(Error::Internal)?)?;
+            written += self.push_granule(out.get_mut(written..).ok_or(Error::Internal)?)?;
         }
         written += self
             .assembler
@@ -199,12 +247,73 @@ impl Mp3Encoder {
         result.map(|_| ())
     }
 
-    /// Codifica las 1152 muestras pendientes de cada canal en un frame y
-    /// escribe en `out` los frames que el reservoir deja completos.
+    /// Analiza el granule completo de `self.pcm` y, si con él hay dos
+    /// granules más uno de lookahead, codifica un frame.
+    fn push_granule(&mut self, out: &mut [u8]) -> Result<usize, Error> {
+        self.analyze_granule()?;
+        self.pending = 0;
+        self.queued += 1;
+        if self.queued < self.queue.len() {
+            return Ok(0);
+        }
+        let written = self.encode_frame(out)?;
+        // El granule de lookahead pasa a ser el primero del próximo frame.
+        self.queue.rotate_left(2);
+        self.queued = 1;
+        Ok(written)
+    }
+
+    /// Filterbank del granule en curso → `self.queue[self.queued]`, con la
+    /// detección de ataques.
+    fn analyze_granule(&mut self) -> Result<(), Error> {
+        let Self {
+            channels,
+            pcm,
+            analysis,
+            queue,
+            queued,
+            energy_history,
+            ..
+        } = self;
+        let entry = queue.get_mut(*queued).ok_or(Error::Internal)?;
+        entry.attack = false;
+        let channels = pcm
+            .iter()
+            .zip(analysis)
+            .zip(&mut entry.sub)
+            .zip(energy_history)
+            .take(*channels);
+        for (((pcm, analysis), sub), history) in channels {
+            for (t, block) in pcm.as_chunks::<SUBBANDS>().0.iter().enumerate() {
+                let mut out = [0.0; SUBBANDS];
+                analysis.analyze(block, &mut out);
+                for (row, s) in sub.iter_mut().zip(out) {
+                    *row.get_mut(t).ok_or(Error::Internal)? = s;
+                }
+            }
+            // Inversión de frecuencia: el decoder niega las muestras impares
+            // de las subbandas impares tras la IMDCT; el encoder lo hace antes.
+            for row in sub.iter_mut().skip(1).step_by(2) {
+                for s in row.iter_mut().skip(1).step_by(2) {
+                    *s = -*s;
+                }
+            }
+            entry.attack |= detect_attack(sub, history);
+        }
+        Ok(())
+    }
+
+    /// Codifica los dos primeros granules de la cola en un frame y escribe
+    /// en `out` los frames que el reservoir deja completos.
     fn encode_frame(&mut self, out: &mut [u8]) -> Result<usize, Error> {
         let spec = self.layout.next_frame();
         let begin = self.assembler.available();
 
+        let [g0, g1, g2] = &self.queue;
+        let first = BlockType::choose(self.last_block, g0.attack, g1.attack);
+        let second = BlockType::choose(first, g1.attack, g2.attack);
+        self.block_types = [first, second];
+        self.last_block = second;
         for gr in 0..2 {
             for ch in 0..self.channels {
                 self.transform(gr, ch)?;
@@ -230,12 +339,14 @@ impl Mp3Encoder {
         // use queda en el reservoir para los frames siguientes.
         let budget = ((begin + spec.main_data_len) * 8) as u32;
         let (gain, codings) = self.quantize_frame(budget)?;
-        for (codings_gr, side_gr) in codings.iter().zip(&mut side.granules) {
+        let granules = codings.iter().zip(&mut side.granules).zip(self.block_types);
+        for ((codings_gr, side_gr), block_type) in granules {
             for (coding, info) in codings_gr.iter().zip(side_gr).take(self.channels) {
                 *info = GranuleInfo {
                     part2_3_length: coding.bits,
                     big_values: coding.big_values,
                     global_gain: u32::from(gain),
+                    block_type,
                     table_select: coding.table_select,
                     region0_count: coding.region0_count,
                     region1_count: coding.region1_count,
@@ -272,7 +383,6 @@ impl Mp3Encoder {
             self.main_data.get(..used).ok_or(Error::Internal)?,
             out,
         )?;
-        self.pending = 0;
         self.frames += 1;
         Ok(written)
     }
@@ -317,32 +427,16 @@ impl Mp3Encoder {
         delta < 0.0
     }
 
-    /// Filterbank + MDCT + reducción de aliasing de un granule → `self.xr[gr][ch]`.
+    /// MDCT del granule `gr` de la cola (canal `ch`) con su tipo de bloque
+    /// → `self.xr[gr][ch]`. Bloques largos: reducción de aliasing. Bloques
+    /// cortos: orden del bitstream (banda corta, ventana, frecuencia).
     fn transform(&mut self, gr: usize, ch: usize) -> Result<(), Error> {
-        let pcm = self.pcm.get(ch).ok_or(Error::Internal)?;
-        let blocks = pcm
-            .as_chunks::<SUBBANDS>()
-            .0
-            .iter()
-            .skip(gr * SUBBAND_LEN)
-            .take(SUBBAND_LEN);
-        let analysis = self.analysis.get_mut(ch).ok_or(Error::Internal)?;
-        // sub[subbanda][t]
-        let mut sub = [[0.0f32; SUBBAND_LEN]; SUBBANDS];
-        for (t, block) in blocks.enumerate() {
-            let mut out = [0.0; SUBBANDS];
-            analysis.analyze(block, &mut out);
-            for (row, s) in sub.iter_mut().zip(out) {
-                *row.get_mut(t).ok_or(Error::Internal)? = s;
-            }
-        }
-        // Inversión de frecuencia: el decoder niega las muestras impares de
-        // las subbandas impares tras la IMDCT; el encoder lo hace antes.
-        for row in sub.iter_mut().skip(1).step_by(2) {
-            for s in row.iter_mut().skip(1).step_by(2) {
-                *s = -*s;
-            }
-        }
+        let block = *self.block_types.get(gr).ok_or(Error::Internal)?;
+        let sub = self
+            .queue
+            .get(gr)
+            .and_then(|g| g.sub.get(ch))
+            .ok_or(Error::Internal)?;
         let overlap = self.overlap.get_mut(ch).ok_or(Error::Internal)?;
         let xr = self
             .xr
@@ -358,11 +452,14 @@ impl Mp3Encoder {
             let (head, tail) = input.split_at_mut(SUBBAND_LEN);
             head.copy_from_slice(prev);
             tail.copy_from_slice(current);
-            self.mdct
-                .forward(crate::mdct::BlockType::Normal, &input, lines);
+            self.mdct.forward(block, &input, lines);
             *prev = *current;
         }
-        self.alias.apply(xr);
+        if block == BlockType::Short {
+            reorder_short(xr, self.short_bands);
+        } else {
+            self.alias.apply(xr);
+        }
         Ok(())
     }
 
@@ -380,10 +477,13 @@ impl Mp3Encoder {
         }
         let Some(gain) = self.lowest_fitting_gain(budget) else {
             let mut codings = [[Coding::default(); 2]; 2];
-            for (ix_gr, codings_gr) in self.ix.iter_mut().zip(&mut codings) {
+            for ((ix_gr, codings_gr), block) in
+                self.ix.iter_mut().zip(&mut codings).zip(self.block_types)
+            {
                 for (ix, coding) in ix_gr.iter_mut().zip(codings_gr) {
                     ix.fill(0);
-                    *coding = huffman::plan(ix, self.bands, false).ok_or(Error::Internal)?;
+                    *coding = huffman::plan(ix, self.bands, block != BlockType::Normal)
+                        .ok_or(Error::Internal)?;
                 }
             }
             return Ok((u8::MAX, codings));
@@ -449,13 +549,15 @@ impl Mp3Encoder {
             .iter()
             .zip(&self.xr34)
             .zip(&mut self.ix)
-            .zip(&mut codings);
-        for (((xr_gr, xr34_gr), ix_gr), codings_gr) in units {
+            .zip(&mut codings)
+            .zip(self.block_types);
+        for ((((xr_gr, xr34_gr), ix_gr), codings_gr), block) in units {
+            let switching = block != BlockType::Normal;
             let channels = xr_gr.iter().zip(xr34_gr).zip(ix_gr).zip(codings_gr);
             for (((xr, xr34), ix), coding) in channels.take(self.channels) {
                 quantize(xr, xr34, gain, ix)?;
-                *coding =
-                    huffman::plan(ix, self.bands, false).filter(|c| c.bits <= MAX_GRANULE_BITS)?;
+                *coding = huffman::plan(ix, self.bands, switching)
+                    .filter(|c| c.bits <= MAX_GRANULE_BITS)?;
                 total += coding.bits;
                 if total > budget {
                     return None;
@@ -463,6 +565,56 @@ impl Mp3Encoder {
             }
         }
         Some(codings)
+    }
+}
+
+/// `true` si hay un ataque en el centro de la ventana del granule: los
+/// intervalos 12..17 del granule anterior y 0..11 del actual. `history`
+/// guarda la energía de los intervalos 6..17 del granule anterior y se
+/// actualiza con los del actual.
+fn detect_attack(sub: &[[f32; SUBBAND_LEN]; SUBBANDS], history: &mut [f32; 12]) -> bool {
+    // seq[0..12]: intervalos 6..17 del granule anterior; seq[12..30]: actual.
+    let mut seq = [0.0f32; 12 + SUBBAND_LEN];
+    let (old, new) = seq.split_at_mut(12);
+    old.copy_from_slice(history);
+    for (t, e) in new.iter_mut().enumerate() {
+        *e = sub
+            .iter()
+            .skip(1)
+            .filter_map(|row| row.get(t))
+            .map(|s| s * s)
+            .sum();
+    }
+    let attack = (ATTACK_HISTORY..ATTACK_HISTORY + SUBBAND_LEN).any(|j| {
+        let (Some(window), Some(&e)) = (seq.get(j - ATTACK_HISTORY..j), seq.get(j)) else {
+            return false;
+        };
+        let background = window.iter().sum::<f32>() / ATTACK_HISTORY as f32;
+        e > ATTACK_RATIO * background + ATTACK_FLOOR
+    });
+    if let Some(tail) = seq.get(SUBBAND_LEN..) {
+        history.copy_from_slice(tail);
+    }
+    attack
+}
+
+/// Pasa un granule de bloques cortos del orden de la MDCT (subbanda,
+/// línea, ventana: `sb·18 + 3·m + w`) al del bitstream: por banda corta,
+/// las líneas de la ventana 0, luego la 1 y luego la 2.
+fn reorder_short(xr: &mut [f32; GRANULE_LINES], bands: &ShortBands) {
+    let source = *xr;
+    let mut pos = 0;
+    for band in bands.windows(2) {
+        let &[start, end] = band else { continue };
+        for w in 0..3 {
+            for f in usize::from(start)..usize::from(end) {
+                let from = (f / 6) * SUBBAND_LEN + 3 * (f % 6) + w;
+                if let (Some(dst), Some(&v)) = (xr.get_mut(pos), source.get(from)) {
+                    *dst = v;
+                }
+                pos += 1;
+            }
+        }
     }
 }
 
