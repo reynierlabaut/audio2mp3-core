@@ -1,4 +1,26 @@
-# audio2mp3-core
+# 🎚️ audio2mp3-core - Rust MP3 Encoder
+
+<details>
+<summary>🌐 <b>Click here to read in English</b></summary>
+
+## Description
+audio2mp3-core is a small MP3 encoder (MPEG-1 Layer III, CBR) written in Rust with zero runtime dependencies and constant memory. It powers the "Convert to MP3" feature of the BeatStream app on Android through a JNI bridge, and exposes a C API for any other platform.
+
+### ✨ Features
+- 🎧 **Quality:** bit reservoir, joint stereo M/S, short blocks on transients and a psychoacoustic outer loop with scalefactors.
+- ⏱️ **Exact duration:** optional Info (Xing) frame with encoder delay and padding for gapless playback.
+- 🔄 **PCM conversion:** S16/F32, 1–8 channels and 8–192 kHz to what the encoder needs (resampling and downmix).
+- 📱 **Android ready:** `libaudio2mp3.so` for arm64-v8a, armeabi-v7a and x86_64, 16 KB page aligned.
+- 🧪 **Verified:** round-trip tests against an independent decoder (symphonia).
+
+### 🚀 Quick start
+```sh
+cargo test --workspace --all-features
+cargo run --release --example encode -- input.wav output.mp3 128
+.\scripts\build-android.ps1        # or scripts/build-android.sh
+```
+Details below (in Spanish), the full specification in `docs/SPEC.md` and pending work in `docs/BACKLOG.md`.
+</details>
 
 Encoder MP3 (MPEG-1 Layer III) escrito en Rust: pequeño, sin dependencias de runtime y con memoria constante.
 
@@ -96,3 +118,18 @@ Bajo cualquiera de estas, a tu elección:
 Implementación clean-room a partir de ISO/IEC 11172-3. No contiene código de LAME, shine, FFmpeg ni otros encoders GPL/LGPL.
 
 La ventana del filterbank y las tablas Huffman (`crates/audio2mp3-core/src/tables/{window,huffman}.rs`) son datos derivados de [minimp3](https://github.com/lieff/minimp3) (CC0, dominio público) y verificados por tests independientes de esa fuente.
+
+<div align="center">
+<pre style="user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; display: inline-block; text-align: left; font-family: monospace; font-size: 12px; line-height: 1.2; background: transparent; border: none; box-shadow: none;">
+███████╗███╗   ██╗ █████╗ ██╗  ██╗███████╗        ███████╗██╗   ██╗███████╗███████╗
+██╔════╝████╗  ██║██╔══██╗██║ ██╔╝██╔════╝        ██╔════╝╚██╗ ██╔╝██╔════╝██╔════╝
+███████╗██╔██╗ ██║███████║█████╔╝ █████╗          █████╗   ╚████╔╝ █████╗  ███████╗
+╚════██║██║╚██╗██║██╔══██║██╔═██╗ ██╔══╝          ██╔══╝    ╚██╔╝  ██╔══╝  ╚════██║
+███████║██║ ╚████║██║  ██║██║  ██╗███████╗███████╗███████╗   ██║   ███████╗███████║
+╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚══════╝╚══════╝   ╚═╝   ╚══════╝╚══════╝
+</pre>
+  <div style="text-align: center; font-family: sans-serif;">
+  <strong><em>Code clean, Strike fast</em></strong><br>
+  <span style="margin-top: 5px;">@RyLabaut</span>
+  </div>
+</div>
