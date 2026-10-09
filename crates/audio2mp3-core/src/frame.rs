@@ -7,8 +7,9 @@ use crate::error::Error;
 /// Muestras por canal en un frame (dos granules de 576).
 pub(crate) const SAMPLES_PER_FRAME: usize = 1152;
 /// Cota global de longitud de frame: 320 kbps a 32 kHz con padding.
-#[cfg(test)]
-const MAX_FRAME_LEN: usize = 1441;
+pub(crate) const MAX_FRAME_LEN: usize = 1441;
+/// Bytes máximos de cabecera + side info (estéreo).
+pub(crate) const MAX_HEAD_LEN: usize = HEADER_LEN + 32;
 
 const HEADER_LEN: usize = 4;
 /// syncword (12) + ID=1 (MPEG-1) + layer=01 (III) + protection_bit=1 (sin CRC).
@@ -65,6 +66,16 @@ impl FrameLayout {
         self.base_len + usize::from(self.frac != 0)
     }
 
+    /// Área de main data más pequeña (frame sin padding).
+    pub fn min_main_data_len(&self) -> usize {
+        self.base_len - HEADER_LEN - self.side_info_len
+    }
+
+    /// Bytes de cabecera + side info.
+    pub fn head_len(&self) -> usize {
+        HEADER_LEN + self.side_info_len
+    }
+
     /// Calcula el siguiente frame y avanza el acumulador de padding.
     pub fn next_frame(&mut self) -> FrameSpec {
         self.acc += self.frac;
@@ -79,6 +90,12 @@ impl FrameLayout {
             main_data_len: len - HEADER_LEN - self.side_info_len,
         }
     }
+}
+
+/// Cabecera con `mode = 01` (joint stereo) y `mode_extension = 10` (M/S, sin
+/// intensity stereo).
+pub(crate) fn with_mid_side(header: u32) -> u32 {
+    header & !(0b1111 << 4) | 0b01 << 6 | 0b10 << 4
 }
 
 pub(crate) fn side_info_len(channels: u8) -> usize {

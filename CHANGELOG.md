@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+Fase 2 (sin cambios en la API pública):
+
+- Bit reservoir: `main_data_begin` hasta 511 bytes, limitado por el buffer de 960 bytes
+  del decoder (0 a 320 kbps / 44.1 kHz). La salida va hasta unos frames por detrás;
+  `max_output_size` / `max_flush_size` lo incluyen.
+- Joint stereo M/S por frame, decidido estimando los bits de L/R y M/S por banda.
+- Rate loop por frame con ganancia común (ruido repartido por igual entre granules y
+  canales) y ganancia mínima 125 (ruido bajo 16 bits; el sobrante va al reservoir).
+- SNR 44.1 kHz estéreo: 64 kbps 35.3 → 44.5 dB, 128 kbps 51.3 → 59.5, 192 kbps
+  57.8 → 67.1, 320 kbps 66.3 → 71.9. Velocidad en PC: 47× → 64× tiempo real.
+
 ## [0.1.0] - 2026-10-08
 
 Primera versión (Fase 1). Pendiente conocido: `libaudio2mp3.so` arm64-v8a ocupa 285 KB

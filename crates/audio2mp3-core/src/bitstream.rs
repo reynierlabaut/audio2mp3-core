@@ -49,6 +49,7 @@ impl<'a> BitWriter<'a> {
     }
 
     /// Escribe `bits` ceros (relleno).
+    #[cfg(test)]
     pub fn write_zeros(&mut self, mut bits: usize) -> Result<(), Error> {
         while bits > 0 {
             let n = bits.min(32);

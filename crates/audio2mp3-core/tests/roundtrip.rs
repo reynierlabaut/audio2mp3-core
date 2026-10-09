@@ -164,12 +164,13 @@ fn delay_matches_independent_decoder() {
     assert_eq!(best, delay as usize);
 }
 
-/// Regresión de calidad. Baseline Fase 1 (44.1 kHz estéreo, señal `music`):
-/// 64 → 35.3 dB, 128 → 51.3 dB, 192 → 57.8 dB, 320 → 66.3 dB.
-/// Los umbrales quedan ~2 dB por debajo; solo pueden subir.
+/// Regresión de calidad (44.1 kHz estéreo, señal `music`).
+/// Fase 1: 64 → 35.3 dB, 128 → 51.3, 192 → 57.8, 320 → 66.3.
+/// Fase 2 (reservoir, M/S, ganancia común por frame): ver umbrales, ~2 dB
+/// por debajo de lo medido; solo pueden subir.
 #[test]
 fn quality_does_not_regress() {
-    for (kbps, min_snr) in [(64, 33.0), (128, 49.0), (192, 55.5), (320, 64.0)] {
+    for (kbps, min_snr) in [(64, 42.5), (128, 57.5), (192, 65.0), (320, 70.0)] {
         let input = music(44_100, 2, 44_100);
         let (mp3, delay) = encode(&input, 44_100, 2, kbps);
         let out = decode(mp3);
@@ -177,6 +178,63 @@ fn quality_does_not_regress() {
         eprintln!("{kbps} kbps estéreo: SNR {snr:.1} dB");
         assert!(snr > min_snr, "{kbps} kbps: SNR {snr:.1} dB < {min_snr} dB");
     }
+}
+
+/// `main_data_begin` de cada frame (9 bits tras la cabecera).
+fn main_data_begins(mp3: &[u8], frame_len: impl Fn(&[u8]) -> usize) -> Vec<u32> {
+    let mut begins = Vec::new();
+    let mut pos = 0;
+    while pos + 6 <= mp3.len() {
+        begins.push(u32::from(mp3[pos + 4]) << 1 | u32::from(mp3[pos + 5] >> 7));
+        pos += frame_len(&mp3[pos..]);
+    }
+    begins
+}
+
+#[test]
+fn reservoir_carries_bits_from_easy_to_hard_frames() {
+    // 0.5 s de silencio, 0.5 s de música, 0.5 s de silencio, 0.5 s de música.
+    let half = 22_050;
+    let tune = music(half, 2, 44_100);
+    let mut input = vec![0i16; 2 * half];
+    input.extend_from_slice(&tune);
+    input.extend(std::iter::repeat_n(0, 2 * half));
+    input.extend_from_slice(&tune);
+    let (mp3, delay) = encode(&input, 44_100, 2, 128);
+    let begins = main_data_begins(&mp3, |f| {
+        144 * 128_000 / 44_100 + usize::from(f[2] >> 1 & 1)
+    });
+    let used = begins.iter().filter(|&&b| b > 0).count();
+    eprintln!("frames con main_data_begin > 0: {used} de {}", begins.len());
+    assert!(used > begins.len() / 4);
+    assert!(begins.iter().all(|&b| b <= 511));
+    let out = decode(mp3);
+    assert_eq!(out.errors, 0);
+    let snr = snr_db(&out.samples, &input, 2, delay as usize);
+    eprintln!("silencio/música 128 kbps: SNR {snr:.1} dB");
+    assert!(snr > 55.0);
+}
+
+#[test]
+fn unbalanced_stereo_keeps_both_channels() {
+    // Canal derecho 40 dB por debajo del izquierdo (y con otra melodía).
+    let left = music(44_100, 1, 44_100);
+    let right = music(44_100, 2, 44_100);
+    let input: Vec<i16> = left
+        .iter()
+        .zip(right.iter().skip(1).step_by(2))
+        .flat_map(|(&l, &r)| [l, r / 100])
+        .collect();
+    let (mp3, delay) = encode(&input, 44_100, 2, 128);
+    let out = decode(mp3);
+    assert_eq!(out.errors, 0);
+    let channel =
+        |c: usize, v: &[f32]| -> Vec<f32> { v.iter().skip(c).step_by(2).copied().collect() };
+    let pcm = |c: usize| -> Vec<i16> { input.iter().skip(c).step_by(2).copied().collect() };
+    let snr_l = snr_db(&channel(0, &out.samples), &pcm(0), 1, delay as usize);
+    let snr_r = snr_db(&channel(1, &out.samples), &pcm(1), 1, delay as usize);
+    eprintln!("estéreo desequilibrado 128 kbps: L {snr_l:.1} dB, R (−40 dB) {snr_r:.1} dB");
+    assert!(snr_l > 50.0 && snr_r > 10.0);
 }
 
 #[test]

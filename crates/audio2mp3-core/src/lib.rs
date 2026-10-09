@@ -30,6 +30,7 @@ mod frame;
 mod huffman;
 mod mdct;
 mod quantize;
+mod reservoir;
 mod tables;
 
 pub use config::{Bitrate, EncoderConfig};

@@ -1,13 +1,18 @@
 //! `Mp3Encoder`: une filterbank, MDCT, cuantización y Huffman en frames.
 
+use core::f32::consts::FRAC_1_SQRT_2;
+
 use crate::bitstream::BitWriter;
 use crate::config::EncoderConfig;
 use crate::error::Error;
 use crate::filterbank::{Filterbank, SUBBANDS};
-use crate::frame::{FrameLayout, GranuleInfo, SideInfo, SAMPLES_PER_FRAME};
+use crate::frame::{
+    self, FrameLayout, GranuleInfo, SideInfo, MAX_FRAME_LEN, MAX_HEAD_LEN, SAMPLES_PER_FRAME,
+};
 use crate::huffman::{self, Coding};
 use crate::mdct::{AliasReduction, Mdct, GRANULE_LINES, SUBBAND_LEN};
 use crate::quantize::{pow34, quantize};
+use crate::reservoir::{Assembler, MAX_PENDING};
 use crate::tables::sfb::{long_bands, LongBands};
 use crate::tables::window::ANALYSIS_WINDOW;
 
@@ -19,8 +24,23 @@ const DELAY: u32 = 481 + 576;
 /// Máximo de `part2_3_length` (12 bits).
 const MAX_GRANULE_BITS: u32 = 4095;
 
+/// Ganancia mínima del rate loop: por debajo, el ruido de cuantización queda
+/// bajo el de un PCM de 16 bits (~1.5 dB por paso); afinar más solo gasta
+/// bits, que se quedan en el bit reservoir. Calibrado con la señal de
+/// `tests/roundtrip.rs`: 140 limitaba 320 kbps (69.2 dB), desde 130 ya no
+/// (71.9 dB); 125 deja margen.
+const MIN_GAIN: u8 = 125;
+
+/// Ganancia de referencia para comparar L/R y M/S en el primer frame.
+const INITIAL_PROBE_GAIN: u8 = 180;
+
+/// Main data de un frame: reservoir (≤ 511) + área del frame.
+const MAIN_DATA_CAP: usize = 511 + MAX_FRAME_LEN;
+
 /// Encoder MP3 MPEG-1 Layer III, CBR, en streaming.
 ///
+/// Usa bit reservoir y joint stereo M/S, así que la salida va unos frames
+/// por detrás de la entrada (`max_output_size` lo tiene en cuenta).
 /// Después de `new()`, `encode_into` y `flush_into` no reservan memoria.
 pub struct Mp3Encoder {
     channels: usize,
@@ -38,16 +58,24 @@ pub struct Mp3Encoder {
     overlap: [[[f32; SUBBAND_LEN]; SUBBANDS]; 2],
     mdct: Mdct,
     alias: AliasReduction,
-    xr: [f32; GRANULE_LINES],
-    xr34: [f32; GRANULE_LINES],
+    /// Espectro `[granule][canal]` (L/R o M/S).
+    xr: [[[f32; GRANULE_LINES]; 2]; 2],
+    /// |xr|^(3/4) `[granule][canal]`.
+    xr34: [[[f32; GRANULE_LINES]; 2]; 2],
     /// Espectro cuantizado `[granule][canal]`.
     ix: [[[i32; GRANULE_LINES]; 2]; 2],
+    /// Ganancia del frame anterior: punto de partida del rate loop y nivel
+    /// de ruido para la decisión L/R vs M/S.
+    probe_gain: u8,
+    main_data: [u8; MAIN_DATA_CAP],
+    assembler: Assembler,
 }
 
 impl Mp3Encoder {
     pub fn new(config: EncoderConfig) -> Result<Self, Error> {
         let layout = FrameLayout::new(&config)?;
         let bands = long_bands(config.sample_rate).ok_or(Error::InvalidSampleRate)?;
+        let assembler = Assembler::new(layout.max_frame_len(), layout.min_main_data_len());
         Ok(Self {
             channels: usize::from(config.channels),
             bands,
@@ -64,24 +92,30 @@ impl Mp3Encoder {
             overlap: [[[0.0; SUBBAND_LEN]; SUBBANDS]; 2],
             mdct: Mdct::new(),
             alias: AliasReduction::new(),
-            xr: [0.0; GRANULE_LINES],
-            xr34: [0.0; GRANULE_LINES],
+            xr: [[[0.0; GRANULE_LINES]; 2]; 2],
+            xr34: [[[0.0; GRANULE_LINES]; 2]; 2],
             ix: [[[0; GRANULE_LINES]; 2]; 2],
+            probe_gain: INITIAL_PROBE_GAIN,
+            main_data: [0; MAIN_DATA_CAP],
+            assembler,
         })
     }
 
     /// Tamaño máximo en bytes que puede producir `encode_into` con
-    /// `num_samples` muestras interleaved (incluye lo acumulado).
+    /// `num_samples` muestras interleaved (incluye lo acumulado y los
+    /// frames retenidos por el bit reservoir).
     pub fn max_output_size(&self, num_samples: usize) -> usize {
         let per_channel = num_samples / self.channels;
         let frames = self.pending.saturating_add(per_channel) / SAMPLES_PER_FRAME;
-        frames.saturating_mul(self.layout.max_frame_len())
+        frames
+            .saturating_add(self.assembler.pending())
+            .saturating_mul(self.layout.max_frame_len())
     }
 
     /// Tamaño máximo que puede producir `flush_into`.
     pub fn max_flush_size(&self) -> usize {
-        // pendiente (< 1152) + retardo (< 1152) caben en dos frames.
-        2 * self.layout.max_frame_len()
+        // pendiente (< 1152) + retardo (< 1152) caben en dos frames, más los retenidos.
+        (2 + MAX_PENDING) * self.layout.max_frame_len()
     }
 
     /// Delay del encoder en muestras por canal.
@@ -89,7 +123,7 @@ impl Mp3Encoder {
         DELAY
     }
 
-    /// Codifica y escribe frames completos en `out`. Devuelve los bytes escritos.
+    /// Codifica y escribe los frames completos en `out`. Devuelve los bytes escritos.
     pub fn encode_into(&mut self, samples: &[i16], out: &mut [u8]) -> Result<usize, Error> {
         if self.finished {
             return Err(Error::Finished);
@@ -115,7 +149,8 @@ impl Mp3Encoder {
     }
 
     /// Completa con silencio los frames necesarios para que el decoder
-    /// reproduzca toda la entrada (incluido el retardo) y termina el encoder.
+    /// reproduzca toda la entrada (incluido el retardo), emite los frames
+    /// retenidos y termina el encoder.
     pub fn flush_into(&mut self, out: &mut [u8]) -> Result<usize, Error> {
         if self.finished {
             return Err(Error::Finished);
@@ -137,6 +172,9 @@ impl Mp3Encoder {
             }
             written += self.encode_frame(out.get_mut(written..).ok_or(Error::Internal)?)?;
         }
+        written += self
+            .assembler
+            .finish(out.get_mut(written..).ok_or(Error::Internal)?)?;
         self.finished = true;
         Ok(written)
     }
@@ -161,28 +199,39 @@ impl Mp3Encoder {
         result.map(|_| ())
     }
 
-    /// Codifica las 1152 muestras pendientes de cada canal en un frame.
+    /// Codifica las 1152 muestras pendientes de cada canal en un frame y
+    /// escribe en `out` los frames que el reservoir deja completos.
     fn encode_frame(&mut self, out: &mut [u8]) -> Result<usize, Error> {
         let spec = self.layout.next_frame();
-        let mut side = SideInfo::default();
-        let mut codings = [[Coding::default(); 2]; 2];
-        let mut remaining = (spec.main_data_len * 8) as u32;
-        let mut units_left = (2 * self.channels) as u32;
+        let begin = self.assembler.available();
 
-        for (gr, (codings_gr, side_gr)) in codings.iter_mut().zip(&mut side.granules).enumerate() {
-            for (ch, (slot, info)) in codings_gr
-                .iter_mut()
-                .zip(side_gr)
-                .take(self.channels)
-                .enumerate()
-            {
+        for gr in 0..2 {
+            for ch in 0..self.channels {
                 self.transform(gr, ch)?;
-                // Los bits que no usa un granule pasan a los siguientes del frame.
-                let budget = (remaining / units_left).min(MAX_GRANULE_BITS);
-                let (gain, coding) = self.quantize_granule(gr, ch, budget)?;
-                remaining -= coding.bits;
-                units_left -= 1;
-                *slot = coding;
+            }
+        }
+        let mid_side = self.channels == 2 && self.prefer_mid_side();
+        if mid_side {
+            for granule in &mut self.xr {
+                let [left, right] = granule;
+                for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+                    let (m, s) = ((*l + *r) * FRAC_1_SQRT_2, (*l - *r) * FRAC_1_SQRT_2);
+                    *l = m;
+                    *r = s;
+                }
+            }
+        }
+
+        let mut side = SideInfo {
+            main_data_begin: begin as u32,
+            ..SideInfo::default()
+        };
+        // Bits del área del frame más el reservoir disponible; lo que no se
+        // use queda en el reservoir para los frames siguientes.
+        let budget = ((begin + spec.main_data_len) * 8) as u32;
+        let (gain, codings) = self.quantize_frame(budget)?;
+        for (codings_gr, side_gr) in codings.iter().zip(&mut side.granules) {
+            for (coding, info) in codings_gr.iter().zip(side_gr).take(self.channels) {
                 *info = GranuleInfo {
                     part2_3_length: coding.bits,
                     big_values: coding.big_values,
@@ -195,28 +244,80 @@ impl Mp3Encoder {
                 };
             }
         }
+        self.probe_gain = gain;
 
-        let frame = out.get_mut(..spec.len).ok_or(Error::BufferTooSmall)?;
-        let mut w = BitWriter::new(frame);
-        w.write(spec.header, 32)?;
-        side.write(&mut w, self.channels as u8)?;
+        let mut w = BitWriter::new(&mut self.main_data);
         for (ix_gr, codings_gr) in self.ix.iter().zip(&codings) {
             for (ix, coding) in ix_gr.iter().zip(codings_gr).take(self.channels) {
                 huffman::write(&mut w, ix, coding)?;
             }
         }
-        // Relleno (datos auxiliares) hasta la longitud del frame.
-        let pad = (spec.len * 8)
-            .checked_sub(w.bit_len())
-            .ok_or(Error::Internal)?;
-        w.write_zeros(pad)?;
+        let used = w.bit_len().div_ceil(8);
 
+        let header = if mid_side {
+            frame::with_mid_side(spec.header)
+        } else {
+            spec.header
+        };
+        let mut head = [0u8; MAX_HEAD_LEN];
+        let mut hw = BitWriter::new(&mut head);
+        hw.write(header, 32)?;
+        side.write(&mut hw, self.channels as u8)?;
+        let head_len = self.layout.head_len();
+
+        let written = self.assembler.push(
+            head.get(..head_len).ok_or(Error::Internal)?,
+            spec.len,
+            begin,
+            self.main_data.get(..used).ok_or(Error::Internal)?,
+            out,
+        )?;
         self.pending = 0;
         self.frames += 1;
-        Ok(spec.len)
+        Ok(written)
     }
 
-    /// Filterbank + MDCT + reducción de aliasing de un granule → `self.xr`.
+    /// `true` si M/S necesitaría menos bits que L/R. Estimación de alta
+    /// resolución por banda de scalefactors: n líneas con energía E y ruido
+    /// D por línea cuestan ≈ (n/2)·log2(E / (n·D)) bits (0 bajo el ruido).
+    /// Con la misma ganancia el ruido es el mismo en L/R y en M/S (la
+    /// transformación es ortonormal), así que gana la menor suma. E_M y E_S
+    /// salen de E_L, E_R y Σ l·r, sin cuantizar nada.
+    fn prefer_mid_side(&self) -> bool {
+        let step = (0.25 * (f32::from(self.probe_gain) - 210.0)).exp2();
+        let noise = step * step / 12.0;
+        let cost = |energy: f32, n: f32| {
+            let per_line = energy / n;
+            if per_line > noise {
+                0.5 * n * (per_line / noise).log2()
+            } else {
+                0.0
+            }
+        };
+        let mut delta = 0.0f32;
+        for [left, right] in &self.xr {
+            for band in self.bands.windows(2) {
+                let &[start, end] = band else { continue };
+                let range = usize::from(start)..usize::from(end);
+                let (Some(l), Some(r)) = (left.get(range.clone()), right.get(range)) else {
+                    continue;
+                };
+                let (mut el, mut er, mut elr) = (0.0f32, 0.0f32, 0.0f32);
+                for (&x, &y) in l.iter().zip(r) {
+                    el += x * x;
+                    er += y * y;
+                    elr += x * y;
+                }
+                let n = l.len() as f32;
+                let em = 0.5 * (el + er) + elr;
+                let es = (0.5 * (el + er) - elr).max(0.0);
+                delta += cost(em, n) + cost(es, n) - cost(el, n) - cost(er, n);
+            }
+        }
+        delta < 0.0
+    }
+
+    /// Filterbank + MDCT + reducción de aliasing de un granule → `self.xr[gr][ch]`.
     fn transform(&mut self, gr: usize, ch: usize) -> Result<(), Error> {
         let pcm = self.pcm.get(ch).ok_or(Error::Internal)?;
         let blocks = pcm
@@ -243,54 +344,123 @@ impl Mp3Encoder {
             }
         }
         let overlap = self.overlap.get_mut(ch).ok_or(Error::Internal)?;
-        let lines = self.xr.as_chunks_mut::<SUBBAND_LEN>().0;
-        for ((current, prev), xr) in sub.iter().zip(overlap.iter_mut()).zip(lines) {
+        let xr = self
+            .xr
+            .get_mut(gr)
+            .and_then(|g| g.get_mut(ch))
+            .ok_or(Error::Internal)?;
+        for ((current, prev), lines) in sub
+            .iter()
+            .zip(overlap.iter_mut())
+            .zip(xr.as_chunks_mut::<SUBBAND_LEN>().0)
+        {
             let mut input = [0.0; 2 * SUBBAND_LEN];
             let (head, tail) = input.split_at_mut(SUBBAND_LEN);
             head.copy_from_slice(prev);
             tail.copy_from_slice(current);
-            self.mdct.forward(&input, xr);
+            self.mdct.forward(&input, lines);
             *prev = *current;
         }
-        self.alias.apply(&mut self.xr);
+        self.alias.apply(xr);
         Ok(())
     }
 
-    /// Rate loop: menor `global_gain` cuyo espectro cabe en `budget` bits.
-    /// Si ni con 255 cabe, el granule se codifica como silencio.
-    fn quantize_granule(
-        &mut self,
-        gr: usize,
-        ch: usize,
-        budget: u32,
-    ) -> Result<(u8, Coding), Error> {
-        pow34(&self.xr, &mut self.xr34);
-        let ix = self
-            .ix
-            .get_mut(gr)
-            .and_then(|g| g.get_mut(ch))
-            .ok_or(Error::Internal)?;
-        let (xr, xr34, bands) = (&self.xr, &self.xr34, self.bands);
-        let mut attempt = |gain: u8| -> Option<Coding> {
-            quantize(xr, xr34, gain, ix)?;
-            huffman::plan(ix, bands).filter(|c| c.bits <= budget)
-        };
-        if attempt(u8::MAX).is_none() {
-            ix.fill(0);
-            let coding = huffman::plan(ix, bands).ok_or(Error::Internal)?;
-            return Ok((u8::MAX, coding));
+    /// Rate loop del frame: la menor ganancia común (≥ `MIN_GAIN`) con la
+    /// que los dos granules de todos los canales caben juntos en `budget`
+    /// bits (y cada uno en `part2_3_length`). Misma ganancia = mismo paso de
+    /// cuantización = ruido repartido por igual, lo óptimo en error
+    /// cuadrático para un número fijo de bits. Si ni con 255 cabe, el frame
+    /// se codifica como silencio.
+    fn quantize_frame(&mut self, budget: u32) -> Result<(u8, [[Coding; 2]; 2]), Error> {
+        for (xr_gr, xr34_gr) in self.xr.iter().zip(&mut self.xr34) {
+            for (xr, xr34) in xr_gr.iter().zip(xr34_gr).take(self.channels) {
+                pow34(xr, xr34);
+            }
         }
-        let (mut lo, mut hi) = (0u8, u8::MAX);
+        let Some(gain) = self.lowest_fitting_gain(budget) else {
+            let mut codings = [[Coding::default(); 2]; 2];
+            for (ix_gr, codings_gr) in self.ix.iter_mut().zip(&mut codings) {
+                for (ix, coding) in ix_gr.iter_mut().zip(codings_gr) {
+                    ix.fill(0);
+                    *coding = huffman::plan(ix, self.bands).ok_or(Error::Internal)?;
+                }
+            }
+            return Ok((u8::MAX, codings));
+        };
+        let codings = self.try_gain(gain, budget).ok_or(Error::Internal)?;
+        Ok((gain, codings))
+    }
+
+    /// Menor ganancia en `MIN_GAIN..=255` con la que el frame cabe. La
+    /// búsqueda parte de la ganancia del frame anterior (cambia poco entre
+    /// frames) con pasos que se duplican hasta acotarla, y termina en
+    /// binario: ~4 intentos en lugar de ~9.
+    fn lowest_fitting_gain(&mut self, budget: u32) -> Option<u8> {
+        let start = self.probe_gain.max(MIN_GAIN);
+        // Invariante: cabe con `hi`; no cabe con `lo − 1` (o `lo == MIN_GAIN`).
+        let (mut lo, mut hi);
+        let mut step = 1u8;
+        if self.try_gain(start, budget).is_some() {
+            hi = start;
+            loop {
+                if hi == MIN_GAIN {
+                    lo = MIN_GAIN;
+                    break;
+                }
+                let cand = hi.saturating_sub(step).max(MIN_GAIN);
+                if self.try_gain(cand, budget).is_some() {
+                    hi = cand;
+                    step = step.saturating_mul(2);
+                } else {
+                    lo = cand + 1;
+                    break;
+                }
+            }
+        } else {
+            lo = start.checked_add(1)?;
+            loop {
+                let cand = lo.saturating_add(step - 1);
+                if self.try_gain(cand, budget).is_some() {
+                    hi = cand;
+                    break;
+                }
+                lo = cand.checked_add(1)?;
+                step = step.saturating_mul(2);
+            }
+        }
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
-            if attempt(mid).is_some() {
+            if self.try_gain(mid, budget).is_some() {
                 hi = mid;
             } else {
                 lo = mid + 1;
             }
         }
-        let coding = attempt(hi).ok_or(Error::Internal)?;
-        Ok((hi, coding))
+        Some(hi)
+    }
+
+    /// Cuantiza todo el frame con `gain` en `self.ix`; `None` si no cabe.
+    fn try_gain(&mut self, gain: u8, budget: u32) -> Option<[[Coding; 2]; 2]> {
+        let mut codings = [[Coding::default(); 2]; 2];
+        let mut total = 0u32;
+        let units = self
+            .xr
+            .iter()
+            .zip(&self.xr34)
+            .zip(&mut self.ix)
+            .zip(&mut codings);
+        for (((xr_gr, xr34_gr), ix_gr), codings_gr) in units {
+            let channels = xr_gr.iter().zip(xr34_gr).zip(ix_gr).zip(codings_gr);
+            for (((xr, xr34), ix), coding) in channels.take(self.channels) {
+                quantize(xr, xr34, gain, ix)?;
+                *coding = huffman::plan(ix, self.bands).filter(|c| c.bits <= MAX_GRANULE_BITS)?;
+                total += coding.bits;
+                if total > budget {
+                    return None;
+                }
+            }
+        }
+        Some(codings)
     }
 }
 
@@ -373,13 +543,16 @@ mod tests {
         );
         assert_eq!(enc.pending, 0);
         let mut out = vec![0u8; enc.max_output_size(samples.len())];
-        assert_eq!(enc.encode_into(&samples, &mut out), Ok(576));
+        let written = enc.encode_into(&samples, &mut out).unwrap();
+        // El primer frame puede quedar retenido por el reservoir.
+        assert!(written == 0 || written == 576);
+        assert_eq!(written + 576 * enc.assembler.pending(), 576);
     }
 
     #[test]
     fn rejects_bad_input_and_use_after_flush() {
         let mut enc = Mp3Encoder::new(config(32_000, 2, 64)).unwrap();
-        let mut out = vec![0u8; 8192];
+        let mut out = vec![0u8; 16_384];
         assert_eq!(
             enc.encode_into(&[1, 2, 3], &mut out),
             Err(Error::InvalidInput)
@@ -407,5 +580,17 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn identical_channels_use_mid_side() {
+        let mono = signal(4 * 1152, 1);
+        let stereo: Vec<i16> = mono.iter().flat_map(|&s| [s, s]).collect();
+        let mut enc = Mp3Encoder::new(config(44_100, 2, 128)).unwrap();
+        let mut out = Vec::new();
+        enc.encode(&stereo, &mut out).unwrap();
+        enc.flush(&mut out).unwrap();
+        // Byte 3 de la cabecera: mode (2 bits) y mode_extension (2 bits).
+        assert_eq!(out[3] >> 4, 0b0110, "joint stereo M/S");
     }
 }
