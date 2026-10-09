@@ -77,10 +77,11 @@ La declaración Kotlin de `NativeEncoder` está en su doc de cabecera: mantenerl
   enmascarado): ver `encoder::tests::outer_loop_*`.
 - Al terminar una tarea: CHANGELOG (`[Unreleased]`), README/SPEC si cambia el estado,
   `docs/BACKLOG.md` (marcar o añadir), commit en español con cuerpo breve.
-- README con el formato de los repos del autor (igual que BeatStream): resumen en inglés
-  en un `<details>` al principio, cuerpo en español, y al final la firma (bloque
-  `<div align="center">` con el banner SNAKE_EYES, *Code clean, Strike fast* y
-  @RyLabaut). No tocarla ni quitarla; si se reescribe el README, conservarla tal cual.
+- README en dos archivos (formato de los repos del autor, igual que BeatStream):
+  `README.md` en inglés (principal) y `README.es.md` en español, con el selector
+  `**English** | [Español](README.es.md)` arriba y mismo contenido en ambos: cualquier
+  cambio va en los dos. Al final de cada uno, la firma (bloque `<div align="center">` con
+  el banner SNAKE_EYES, *Code clean, Strike fast* y @RyLabaut): no tocarla ni quitarla.
 
 ## Ahorro de tokens
 
