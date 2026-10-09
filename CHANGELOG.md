@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-09
+
 Fase 2 (sin cambios en la API pública):
 
 - Bit reservoir: `main_data_begin` hasta 511 bytes, limitado por el buffer de 960 bytes
@@ -13,7 +15,7 @@ Fase 2 (sin cambios en la API pública):
 - SNR 44.1 kHz estéreo: 64 kbps 35.3 → 44.5 dB, 128 kbps 51.3 → 59.5, 192 kbps
   57.8 → 67.1, 320 kbps 66.3 → 71.9. Velocidad en PC: 47× → 64× tiempo real.
 
-Fase 3 (en curso):
+Fase 3:
 
 - Bloques cortos y ventanas start/stop ante transitorios: detector de ataques sobre
   la energía de las subbandas con un granule de lookahead; mismo tipo de bloque en

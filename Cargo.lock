@@ -4,14 +4,14 @@ version = 4
 
 [[package]]
 name = "audio2mp3-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "symphonia",
 ]
 
 [[package]]
 name = "audio2mp3-jni"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "audio2mp3-core",
 ]

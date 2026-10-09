@@ -4,8 +4,9 @@ Pendientes de `audio2mp3-core`, de más a menos prioritario. Las cifras son las 
 
 ## Para usarlo en producción
 
-- [ ] **Release `v0.2.0`** con Fases 2 y 3 + frame Info (`scripts/build-android.ps1`, tag,
-      subir zip + `SHA256SUMS` a GitHub Releases). `v0.1.0` solo tiene la Fase 1.
+- [ ] **Release `v0.2.0`** con Fases 2 y 3 + frame Info: versión y `dist/` ya generados
+      (`audio2mp3-android-v0.2.0.zip`, sha256 `2c73f435…`); falta el tag y subir zip +
+      `SHA256SUMS` a GitHub Releases. `v0.1.0` solo tiene la Fase 1.
 - [ ] **Velocidad en Android real**: objetivo ≥ 20× tiempo real en gama media arm64
       (spec §16). En PC: 43–51×. Si no llega: SIMD/NEON en filterbank (matriz 32×64) y en
       `quantize`, menos iteraciones del outer loop (`MAX_OUTER_ITERATIONS`).

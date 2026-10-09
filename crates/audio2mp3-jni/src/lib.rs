@@ -639,7 +639,7 @@ mod tests {
         );
         assert_eq!(
             Java_expo_modules_audio2mp3_NativeEncoder_version(env, CLASS),
-            1 << 8
+            2 << 8
         );
     }
 
