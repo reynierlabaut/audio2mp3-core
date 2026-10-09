@@ -10,6 +10,7 @@ use crate::frame::{
     self, FrameLayout, GranuleInfo, SideInfo, MAX_FRAME_LEN, MAX_HEAD_LEN, SAMPLES_PER_FRAME,
 };
 use crate::huffman::{self, Coding};
+use crate::info::{self, InfoFields};
 use crate::mdct::{AliasReduction, BlockType, Mdct, GRANULE_LINES, SUBBAND_LEN};
 use crate::psy::{self, BandLayout, MAX_RANGES};
 use crate::quantize::{distortion, pow34, pow43_table, quantize};
@@ -78,6 +79,10 @@ const MAIN_DATA_CAP: usize = 511 + MAX_FRAME_LEN;
 /// Después de `new()`, `encode_into` y `flush_into` no reservan memoria.
 pub struct Mp3Encoder {
     channels: usize,
+    bitrate_kbps: u16,
+    info_frame: InfoFrame,
+    /// Bytes emitidos en total (incluido el frame Info).
+    bytes_out: u64,
     bands: &'static LongBands,
     short_bands: &'static ShortBands,
     layout: FrameLayout,
@@ -128,6 +133,16 @@ pub struct Mp3Encoder {
     stats: OuterStats,
     main_data: [u8; MAIN_DATA_CAP],
     assembler: Assembler,
+}
+
+/// Estado del frame Info.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InfoFrame {
+    Disabled,
+    /// Activado; el provisional aún no se ha emitido.
+    Pending,
+    /// Provisional emitido al principio de la salida.
+    Written,
 }
 
 /// Scalefactors de un granule y canal con su codificación.
@@ -183,6 +198,9 @@ impl Mp3Encoder {
         let assembler = Assembler::new(layout.max_frame_len(), layout.min_main_data_len());
         Ok(Self {
             channels: usize::from(config.channels),
+            bitrate_kbps: config.bitrate.kbps(),
+            info_frame: InfoFrame::Disabled,
+            bytes_out: 0,
             bands,
             short_bands,
             layout,
@@ -234,18 +252,87 @@ impl Mp3Encoder {
         frames
             .saturating_add(self.assembler.pending())
             .saturating_mul(self.layout.max_frame_len())
+            .saturating_add(self.pending_info_size())
     }
 
     /// Tamaño máximo que puede producir `flush_into`.
     pub fn max_flush_size(&self) -> usize {
         // Granules en cola y pendiente (< 1728) + retardo (< 1152) caben en
         // tres frames, más los retenidos por el reservoir.
-        (3 + MAX_PENDING) * self.layout.max_frame_len()
+        (3 + MAX_PENDING) * self.layout.max_frame_len() + self.pending_info_size()
     }
 
     /// Delay del encoder en muestras por canal.
     pub fn delay_samples(&self) -> u32 {
         DELAY
+    }
+
+    /// Activa el frame Info (cabecera Xing de CBR con extensión LAME): el
+    /// primer frame de la salida será uno provisional y, tras `flush`,
+    /// `info_frame_into` da el definitivo, que hay que escribir encima de
+    /// los primeros `info_frame_size()` bytes del archivo. Aporta la
+    /// duración exacta y el retardo/padding para la reproducción sin huecos.
+    ///
+    /// Solo antes de codificar nada; si no, `InvalidInput`.
+    pub fn enable_info_frame(&mut self) -> Result<(), Error> {
+        if self.finished {
+            return Err(Error::Finished);
+        }
+        if self.consumed > 0 || self.bytes_out > 0 {
+            return Err(Error::InvalidInput);
+        }
+        self.info_frame = InfoFrame::Pending;
+        Ok(())
+    }
+
+    /// Bytes del frame Info (0 si no está activado).
+    pub fn info_frame_size(&self) -> usize {
+        match self.info_frame {
+            InfoFrame::Disabled => 0,
+            InfoFrame::Pending | InfoFrame::Written => self.layout.unpadded_frame().len,
+        }
+    }
+
+    /// Escribe el frame Info definitivo en `out` (`info_frame_size()` bytes).
+    /// Solo tras `flush`; si el frame Info no está activado o el encoder no
+    /// ha terminado, `InvalidInput`.
+    pub fn info_frame_into(&self, out: &mut [u8]) -> Result<usize, Error> {
+        if self.info_frame != InfoFrame::Written || !self.finished {
+            return Err(Error::InvalidInput);
+        }
+        let fields = InfoFields {
+            audio_frames: u32::try_from(self.frames).unwrap_or(u32::MAX),
+            total_bytes: u32::try_from(self.bytes_out).unwrap_or(u32::MAX),
+            bitrate_kbps: self.bitrate_kbps,
+            delay: DELAY,
+            input_samples: self.consumed,
+        };
+        info::write(
+            out,
+            &self.layout.unpadded_frame(),
+            self.layout.head_len(),
+            &fields,
+        )
+    }
+
+    /// Bytes del frame Info provisional que aún falta emitir.
+    fn pending_info_size(&self) -> usize {
+        if self.info_frame == InfoFrame::Pending {
+            self.layout.unpadded_frame().len
+        } else {
+            0
+        }
+    }
+
+    /// Emite el frame Info provisional si toca (al principio de la salida).
+    fn emit_info_placeholder(&mut self, out: &mut [u8]) -> Result<usize, Error> {
+        if self.info_frame != InfoFrame::Pending {
+            return Ok(0);
+        }
+        let written =
+            info::write_placeholder(out, &self.layout.unpadded_frame(), self.layout.head_len())?;
+        self.info_frame = InfoFrame::Written;
+        Ok(written)
     }
 
     /// Codifica y escribe los frames completos en `out`. Devuelve los bytes escritos.
@@ -259,7 +346,11 @@ impl Mp3Encoder {
         if out.len() < self.max_output_size(samples.len()) {
             return Err(Error::BufferTooSmall);
         }
-        let mut written = 0;
+        let mut written = if samples.is_empty() {
+            0
+        } else {
+            self.emit_info_placeholder(out)?
+        };
         for frame in samples.chunks_exact(self.channels) {
             for (pcm, &s) in self.pcm.iter_mut().zip(frame) {
                 *pcm.get_mut(self.pending).ok_or(Error::Internal)? = f32::from(s) / 32768.0;
@@ -270,6 +361,7 @@ impl Mp3Encoder {
             }
         }
         self.consumed += (samples.len() / self.channels) as u64;
+        self.bytes_out += written as u64;
         Ok(written)
     }
 
@@ -288,7 +380,7 @@ impl Mp3Encoder {
         } else {
             (self.consumed + u64::from(DELAY)).div_ceil(SAMPLES_PER_FRAME as u64)
         };
-        let mut written = 0;
+        let mut written = self.emit_info_placeholder(out)?;
         while self.frames < needed {
             for pcm in &mut self.pcm {
                 pcm.get_mut(self.pending..)
@@ -300,6 +392,7 @@ impl Mp3Encoder {
         written += self
             .assembler
             .finish(out.get_mut(written..).ok_or(Error::Internal)?)?;
+        self.bytes_out += written as u64;
         self.finished = true;
         Ok(written)
     }
@@ -1070,6 +1163,34 @@ mod tests {
             );
             assert!(s.best_over_db <= s.first_over_db);
         }
+    }
+
+    #[test]
+    fn info_frame_is_reserved_and_finalized() {
+        let mut enc = Mp3Encoder::new(config(44_100, 2, 128)).unwrap();
+        assert_eq!(enc.info_frame_size(), 0);
+        enc.enable_info_frame().unwrap();
+        assert_eq!(enc.info_frame_size(), 417);
+        let samples = signal(20_000, 2);
+        let mut out = Vec::new();
+        enc.encode(&samples, &mut out).unwrap();
+        // Provisional: "Info" sin datos (flags = 0) tras cabecera y side info.
+        assert_eq!(&out[36..40], b"Info");
+        assert_eq!(&out[40..44], &[0; 4]);
+        let mut info = [0u8; 417];
+        assert_eq!(enc.info_frame_into(&mut info), Err(Error::InvalidInput));
+        enc.flush(&mut out).unwrap();
+        assert_eq!(enc.info_frame_into(&mut info), Ok(417));
+        assert_eq!(&info[..36], &out[..36]);
+        let audio_frames = (20_000 + DELAY as usize).div_ceil(1152) as u32;
+        assert_eq!(&info[44..48], &audio_frames.to_be_bytes());
+        assert_eq!(&info[48..52], &(out.len() as u32).to_be_bytes());
+        assert_eq!(enc.enable_info_frame(), Err(Error::Finished));
+
+        let mut late = Mp3Encoder::new(config(44_100, 2, 128)).unwrap();
+        late.encode(&samples[..4_000], &mut Vec::new()).unwrap();
+        assert_eq!(late.enable_info_frame(), Err(Error::InvalidInput));
+        assert_eq!(late.info_frame_into(&mut info), Err(Error::InvalidInput));
     }
 
     #[test]

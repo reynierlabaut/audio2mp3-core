@@ -6,10 +6,10 @@ Encoder MP3 (MPEG-1 Layer III) escrito en Rust: pequeño, sin dependencias de ru
 PCM S16 interleaved ──► audio2mp3-core ──► frames MP3
 ```
 
-> Estado: CBR con bit reservoir, joint stereo M/S, bloques cortos ante transitorios y
-> outer loop guiado por un modelo psicoacústico; `pcm-convert`, API C
-> (`include/audio2mp3.h`), puente JNI y build de Android. Falta: frame Info/Xing y
-> build de iOS (XCFramework).
+> Estado: CBR con bit reservoir, joint stereo M/S, bloques cortos ante transitorios,
+> outer loop guiado por un modelo psicoacústico y frame Info (duración exacta);
+> `pcm-convert`, API C (`include/audio2mp3.h`), puente JNI y build de Android.
+> Pendientes en [`docs/BACKLOG.md`](docs/BACKLOG.md).
 
 ## Uso (Rust)
 
@@ -22,6 +22,10 @@ let mut mp3 = Vec::new();
 encoder.encode(&pcm, &mut mp3)?; // PCM i16 intercalado, en bloques de cualquier tamaño
 encoder.flush(&mut mp3)?;
 ```
+
+Frame Info (opcional, duración exacta y gapless): `encoder.enable_info_frame()?` antes del
+primer `encode`; tras `flush`, `encoder.info_frame_into(&mut mp3[..encoder.info_frame_size()])?`
+reescribe el primer frame (en un archivo: volver al inicio y sobrescribir esos bytes).
 
 Prueba manual con un WAV de 16 bits:
 
@@ -42,24 +46,14 @@ La declaración Kotlin correspondiente (`expo.modules.audio2mp3.NativeEncoder`) 
 en la documentación de `crates/audio2mp3-jni/src/lib.rs`. Usa `ByteBuffer` directos
 (sin copias); `encode`/`flush` devuelven los bytes escritos o `−código` de error.
 
-## Pendientes conocidos
-
-- TODO(fase2): frame Info/Xing + etiqueta LAME (duración exacta, delay/padding para
-  gapless). Requiere API aditiva: reservar el primer frame y reescribirlo tras `flush`.
-
-- TODO(fase1): tamaño de `libaudio2mp3.so` arm64-v8a = 297 KB (con converter y modelo
-  psicoacústico), objetivo ≤ 200 KB (spec §16).
-  `opt-level = "z"` no lo reduce; el 70 % es `.text`, probablemente de `std`
-  (formateo, panics/unwind). Medir con `cargo bloat` y valorar quitar bounds checks
-  en caminos calientes o `-Z build-std` con `panic_abort` (nightly).
-
 ## Estructura
 
 ```text
 crates/audio2mp3-core   Encoder (features: ffi, pcm-convert)
 crates/audio2mp3-jni    Puente JNI para Android → libaudio2mp3.so
 include/audio2mp3.h     Cabecera C de la FFI
-scripts/                Builds de Android (cargo-ndk) e iOS (XCFramework)
+scripts/                Build de Android (sh y ps1)
+docs/                   SPEC.md (especificación) y BACKLOG.md (pendientes)
 ```
 
 ## Desarrollo

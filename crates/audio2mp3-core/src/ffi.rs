@@ -227,6 +227,53 @@ pub unsafe extern "C" fn audio2mp3_encoder_destroy(enc: *mut Audio2Mp3Encoder) {
     }
 }
 
+/// # Safety
+/// `enc` debe ser NULL o un handle vivo, sin uso concurrente.
+#[no_mangle]
+pub unsafe extern "C" fn audio2mp3_encoder_enable_info_frame(enc: *mut Audio2Mp3Encoder) -> i32 {
+    // SAFETY: NULL o handle vivo según el contrato.
+    match unsafe { enc.as_mut() } {
+        None => AUDIO2MP3_ERR_NULL_POINTER,
+        Some(e) => e
+            .inner
+            .enable_info_frame()
+            .map_or_else(error_code, |()| AUDIO2MP3_OK),
+    }
+}
+
+/// # Safety
+/// `enc` debe ser NULL o un handle vivo.
+#[no_mangle]
+pub unsafe extern "C" fn audio2mp3_encoder_info_frame_size(enc: *const Audio2Mp3Encoder) -> usize {
+    // SAFETY: NULL o handle vivo según el contrato.
+    unsafe { enc.as_ref() }.map_or(0, |e| e.inner.info_frame_size())
+}
+
+/// # Safety
+/// - `enc`: NULL o handle vivo.
+/// - `out`: válido para escribir `out_capacity` bytes.
+/// - `out_written`: válido para escritura.
+#[no_mangle]
+pub unsafe extern "C" fn audio2mp3_encoder_info_frame(
+    enc: *const Audio2Mp3Encoder,
+    out: *mut u8,
+    out_capacity: usize,
+    out_written: *mut usize,
+) -> i32 {
+    if enc.is_null() || out_written.is_null() {
+        return AUDIO2MP3_ERR_NULL_POINTER;
+    }
+    let result = (|| {
+        // SAFETY: según el contrato de esta función.
+        let out = unsafe { out_slice(out, out_capacity) }?;
+        // SAFETY: handle vivo según el contrato.
+        let encoder = unsafe { &(*enc).inner };
+        encoder.info_frame_into(out).map_err(error_code)
+    })();
+    // SAFETY: `out_written` comprobado no nulo arriba.
+    unsafe { finish(result, out_written) }
+}
+
 #[cfg(feature = "pcm-convert")]
 mod converter;
 #[cfg(feature = "pcm-convert")]
@@ -293,6 +340,9 @@ mod tests {
             "int32_t audio2mp3_encoder_encode(Audio2Mp3Encoder *enc,",
             "int32_t audio2mp3_encoder_flush(Audio2Mp3Encoder *enc,",
             "void audio2mp3_encoder_destroy(Audio2Mp3Encoder *enc);",
+            "int32_t audio2mp3_encoder_enable_info_frame(Audio2Mp3Encoder *enc);",
+            "size_t audio2mp3_encoder_info_frame_size(const Audio2Mp3Encoder *enc);",
+            "int32_t audio2mp3_encoder_info_frame(const Audio2Mp3Encoder *enc,",
             "int32_t audio2mp3_converter_create(uint32_t in_rate, uint8_t in_channels,",
             "uint32_t audio2mp3_converter_out_rate(const Audio2Mp3Converter *c);",
             "uint8_t audio2mp3_converter_out_channels(const Audio2Mp3Converter *c);",
@@ -303,6 +353,55 @@ mod tests {
             "void audio2mp3_converter_destroy(Audio2Mp3Converter *c);",
         ] {
             assert!(HEADER.contains(f), "falta en el header: {f}");
+        }
+    }
+
+    #[test]
+    fn info_frame_through_c_api() {
+        let pcm = vec![1000i16; 2 * 4_000];
+        let mut written = 0;
+        // SAFETY: todos los punteros son válidos durante cada llamada.
+        unsafe {
+            let mut enc = ptr::null_mut();
+            assert_eq!(
+                audio2mp3_encoder_create(48_000, 2, 192, &mut enc),
+                AUDIO2MP3_OK
+            );
+            assert_eq!(audio2mp3_encoder_info_frame_size(enc), 0);
+            assert_eq!(audio2mp3_encoder_enable_info_frame(enc), AUDIO2MP3_OK);
+            let size = audio2mp3_encoder_info_frame_size(enc);
+            assert_eq!(size, 576);
+            let mut out = vec![0u8; audio2mp3_encoder_max_output_size(enc, pcm.len())];
+            let code = audio2mp3_encoder_encode(
+                enc,
+                pcm.as_ptr(),
+                pcm.len(),
+                out.as_mut_ptr(),
+                out.len(),
+                &mut written,
+            );
+            assert_eq!(code, AUDIO2MP3_OK);
+            assert_eq!(&out[36..40], b"Info");
+            assert_eq!(
+                audio2mp3_encoder_enable_info_frame(enc),
+                AUDIO2MP3_ERR_INVALID_INPUT
+            );
+            let mut tail = vec![0u8; audio2mp3_encoder_max_flush_size(enc)];
+            assert_eq!(
+                audio2mp3_encoder_flush(enc, tail.as_mut_ptr(), tail.len(), &mut written),
+                AUDIO2MP3_OK
+            );
+            let mut info = vec![0u8; size];
+            assert_eq!(
+                audio2mp3_encoder_info_frame(enc, info.as_mut_ptr(), size, &mut written),
+                AUDIO2MP3_OK
+            );
+            assert_eq!(written, size);
+            assert_eq!(
+                audio2mp3_encoder_enable_info_frame(ptr::null_mut()),
+                AUDIO2MP3_ERR_NULL_POINTER
+            );
+            audio2mp3_encoder_destroy(enc);
         }
     }
 

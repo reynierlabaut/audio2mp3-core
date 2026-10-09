@@ -22,6 +22,14 @@
 //!     @JvmStatic external fun flush(handle: Long, out: ByteBuffer): Int
 //!     @JvmStatic external fun destroy(handle: Long)
 //!
+//!     // Frame Info (duración exacta, gapless): enableInfoFrame antes del primer
+//!     // encode; tras flush, infoFrame da los bytes que sustituyen al inicio del archivo.
+//!     /** 0 o código de error. */
+//!     @JvmStatic external fun enableInfoFrame(handle: Long): Int
+//!     @JvmStatic external fun infoFrameSize(handle: Long): Int
+//!     /** Bytes escritos (≥ 0) o −código de error. */
+//!     @JvmStatic external fun infoFrame(handle: Long, out: ByteBuffer): Int
+//!
 //!     // Converter: PCM del decoder (inFormat 0 = S16, 1 = F32) → S16 para el encoder.
 //!     @JvmStatic external fun converterValidate(inRate: Int, inChannels: Int, inFormat: Int): Int
 //!     @JvmStatic external fun converterCreate(inRate: Int, inChannels: Int, inFormat: Int): Long
@@ -323,6 +331,54 @@ pub unsafe extern "system" fn Java_expo_modules_audio2mp3_NativeEncoder_destroy(
         // SAFETY: creado con Box::into_raw en `create` y no liberado antes.
         drop(unsafe { Box::from_raw(ptr) });
     }
+}
+
+/// # Safety
+/// `handle`: 0 o handle vivo de `create`, sin uso concurrente.
+#[no_mangle]
+pub unsafe extern "system" fn Java_expo_modules_audio2mp3_NativeEncoder_enableInfoFrame(
+    _env: *mut JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> i32 {
+    // SAFETY: según el contrato.
+    match unsafe { encoder(handle) } {
+        Ok(enc) => enc.enable_info_frame().map_or_else(error_code, |()| 0),
+        Err(code) => code,
+    }
+}
+
+/// # Safety
+/// `handle`: 0 o handle vivo de `create`.
+#[no_mangle]
+pub unsafe extern "system" fn Java_expo_modules_audio2mp3_NativeEncoder_infoFrameSize(
+    _env: *mut JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> i32 {
+    // SAFETY: según el contrato.
+    unsafe { encoder(handle) }.map_or(0, |enc| to_jint(enc.info_frame_size()))
+}
+
+/// # Safety
+/// Llamada desde la JVM: `env` válido, `handle` 0 o vivo, `out` ByteBuffer directo.
+#[no_mangle]
+pub unsafe extern "system" fn Java_expo_modules_audio2mp3_NativeEncoder_infoFrame(
+    env: *mut JNIEnv,
+    _class: JClass,
+    handle: i64,
+    out: JObject,
+) -> i32 {
+    let result = (|| {
+        // SAFETY: según el contrato.
+        let enc = unsafe { encoder(handle) }?;
+        // SAFETY: env y objeto de esta llamada.
+        let output = unsafe { direct_buffer(env, out) }?;
+        // SAFETY: `len` bytes válidos del buffer directo durante la llamada.
+        let out = unsafe { core::slice::from_raw_parts_mut(output.ptr, output.len) };
+        enc.info_frame_into(out).map_err(error_code)
+    })();
+    to_result(result)
 }
 
 // ------------------------------------------------------------------ Converter
@@ -755,6 +811,50 @@ mod tests {
                 Java_expo_modules_audio2mp3_NativeEncoder_maxFlushSize(env, CLASS, 0),
                 0
             );
+        }
+    }
+
+    #[test]
+    fn info_frame_through_jni() {
+        let mut fake = fake_env();
+        let env: *mut JNIEnv = &mut fake.env;
+        // SAFETY: env falso válido, handle vivo, buffers falsos válidos.
+        unsafe {
+            let h = Java_expo_modules_audio2mp3_NativeEncoder_create(env, CLASS, 44_100, 1, 128);
+            assert_eq!(
+                Java_expo_modules_audio2mp3_NativeEncoder_enableInfoFrame(env, CLASS, h),
+                0
+            );
+            let size = Java_expo_modules_audio2mp3_NativeEncoder_infoFrameSize(env, CLASS, h);
+            assert_eq!(size, 417);
+            let mut info = FakeBuffer {
+                data: vec![0; size as usize],
+                direct: true,
+            };
+            assert_eq!(
+                Java_expo_modules_audio2mp3_NativeEncoder_infoFrame(env, CLASS, h, obj(&mut info)),
+                -ERR_INVALID_INPUT
+            );
+            let flush_size = Java_expo_modules_audio2mp3_NativeEncoder_maxFlushSize(env, CLASS, h);
+            let mut tail = FakeBuffer {
+                data: vec![0; flush_size as usize],
+                direct: true,
+            };
+            let written =
+                Java_expo_modules_audio2mp3_NativeEncoder_flush(env, CLASS, h, obj(&mut tail));
+            // Sin audio: solo el frame Info provisional.
+            assert_eq!(written, size);
+            assert_eq!(
+                Java_expo_modules_audio2mp3_NativeEncoder_infoFrame(env, CLASS, h, obj(&mut info)),
+                size
+            );
+            // Mono: "Info" tras 4 bytes de cabecera y 17 de side info.
+            assert_eq!(&info.data[21..25], b"Info");
+            assert_eq!(
+                Java_expo_modules_audio2mp3_NativeEncoder_enableInfoFrame(env, CLASS, 0),
+                ERR_NULL_POINTER
+            );
+            Java_expo_modules_audio2mp3_NativeEncoder_destroy(env, CLASS, h);
         }
     }
 

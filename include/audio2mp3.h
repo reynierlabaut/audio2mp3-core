@@ -75,6 +75,24 @@ int32_t audio2mp3_encoder_flush(Audio2Mp3Encoder *enc,
 /* Acepta NULL. */
 void audio2mp3_encoder_destroy(Audio2Mp3Encoder *enc);
 
+/* Frame Info (cabecera Xing de CBR + extensión LAME): duración exacta y
+ * retardo/padding para reproducción sin huecos.
+ * 1. enable_info_frame antes del primer encode (si no, INVALID_INPUT):
+ *    la salida empieza con un frame Info provisional de info_frame_size
+ *    bytes.
+ * 2. Tras flush, info_frame escribe el definitivo, que hay que copiar sobre
+ *    los primeros info_frame_size bytes del archivo. Si no se hace, el
+ *    archivo sigue siendo válido (sin duración exacta). */
+int32_t audio2mp3_encoder_enable_info_frame(Audio2Mp3Encoder *enc);
+
+/* 0 si el frame Info no está activado o enc es NULL. */
+size_t audio2mp3_encoder_info_frame_size(const Audio2Mp3Encoder *enc);
+
+/* Solo tras flush; si no, INVALID_INPUT. */
+int32_t audio2mp3_encoder_info_frame(const Audio2Mp3Encoder *enc,
+                                     uint8_t *out, size_t out_capacity,
+                                     size_t *out_written);
+
 /* ------------------------------------------------------------------
  * Converter (solo con la feature pcm-convert): PCM del decoder (S16/F32,
  * 1-8 canales en orden WAVE, 8000-192000 Hz) -> S16 intercalado de 1-2

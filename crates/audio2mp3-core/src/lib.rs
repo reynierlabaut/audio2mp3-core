@@ -28,6 +28,7 @@ pub mod ffi;
 mod filterbank;
 mod frame;
 mod huffman;
+mod info;
 mod mdct;
 mod psy;
 mod quantize;

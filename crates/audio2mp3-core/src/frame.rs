@@ -77,6 +77,15 @@ impl FrameLayout {
         HEADER_LEN + self.side_info_len
     }
 
+    /// Frame sin padding que no avanza el acumulador (frame Info).
+    pub fn unpadded_frame(&self) -> FrameSpec {
+        FrameSpec {
+            header: self.header_base,
+            len: self.base_len,
+            main_data_len: self.base_len - HEADER_LEN - self.side_info_len,
+        }
+    }
+
     /// Calcula el siguiente frame y avanza el acumulador de padding.
     pub fn next_frame(&mut self) -> FrameSpec {
         self.acc += self.frac;

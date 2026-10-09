@@ -63,8 +63,10 @@ El encoder se construye en fases. **La API pública no cambia entre fases**: cad
 - Joint stereo M/S (decisión por frame).
 - Outer loop (distorsión por banda + scalefactors). Implementado junto con el modelo
   psicoacústico de la Fase 3.
-- Frame **Info/Xing** opcional (duración exacta, delay/padding para gapless). **TODO**:
-  pospuesto; requiere funciones nuevas (aditivas) para reescribir el primer frame tras `flush`.
+- Frame **Info/Xing** opcional (duración exacta, delay/padding para gapless).
+  Implementado con API aditiva: `enable_info_frame` reserva un primer frame provisional
+  ("Info" sin datos, inocuo si no se reemplaza) e `info_frame_into` da el definitivo tras
+  `flush` para reescribir el inicio del archivo. Identificador del encoder `a2m<versión>`.
 
 Implementado: bit reservoir, M/S por frame (estimación de bits por banda) y rate loop
 con ganancia común por frame.

@@ -24,6 +24,11 @@ Fase 3 (en curso):
   scalefactors (`scalefac_compress`, part2) de hasta 8 iteraciones. Ruido sobre el umbral
   (señal de los tests): 64 kbps 95.9 → 75.0 dB/frame, 128 kbps 72.3 → 8.6, 192 kbps
   46.6 → 0.0. El SNR baja como mucho 1.6 dB (192 kbps). Velocidad en PC: 43–51×.
+- Frame Info (Xing de CBR + extensión LAME), opcional y aditivo: `enable_info_frame`,
+  `info_frame_size`, `info_frame_into` (y `audio2mp3_encoder_*info_frame*`, JNI
+  `enableInfoFrame`/`infoFrameSize`/`infoFrame`). Duración exacta: symphonia en modo
+  gapless ya no recorta el último frame. Identificador propio `a2m<versión>`.
+- Pendientes movidos a `docs/BACKLOG.md`.
 
 ## [0.1.0] - 2026-10-08
 

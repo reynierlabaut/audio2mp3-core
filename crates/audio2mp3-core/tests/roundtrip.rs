@@ -20,6 +20,10 @@ struct Decoded {
 }
 
 fn decode(mp3: Vec<u8>) -> Decoded {
+    decode_with(mp3, false)
+}
+
+fn decode_with(mp3: Vec<u8>, gapless: bool) -> Decoded {
     let mss = MediaSourceStream::new(Box::new(std::io::Cursor::new(mp3)), Default::default());
     let mut hint = Hint::new();
     hint.with_extension("mp3");
@@ -41,7 +45,7 @@ fn decode(mp3: Vec<u8>) -> Decoded {
     let track_id = track.id;
     // Sin Xing/Info, symphonia estima la duración por bitrate y en modo gapless
     // puede recortar el último frame; se desactiva para ver la salida completa.
-    let options = AudioDecoderOptions::default().gapless(false);
+    let options = AudioDecoderOptions::default().gapless(gapless);
     let mut decoder = symphonia::default::get_codecs()
         .make_audio_decoder(&params, &options)
         .expect("decoder");
@@ -86,6 +90,26 @@ fn encode(samples: &[i16], sample_rate: u32, channels: u8, kbps: u16) -> (Vec<u8
     (mp3, enc.delay_samples())
 }
 
+/// Codifica con frame Info y lo reescribe al final, como haría la app.
+fn encode_with_info(samples: &[i16], sample_rate: u32, channels: u8, kbps: u16) -> (Vec<u8>, u32) {
+    let config = EncoderConfig {
+        sample_rate,
+        channels,
+        bitrate: Bitrate::from_kbps(kbps).unwrap(),
+    };
+    let mut enc = Mp3Encoder::new(config).unwrap();
+    enc.enable_info_frame().unwrap();
+    let mut mp3 = Vec::new();
+    enc.encode(samples, &mut mp3).unwrap();
+    enc.flush(&mut mp3).unwrap();
+    let size = enc.info_frame_size();
+    assert_eq!(enc.info_frame_into(&mut mp3[..size]), Ok(size));
+    // Campo "frames": tras cabecera (4), side info, "Info" (4) y flags (4).
+    let frames_at = 4 + if channels == 1 { 17 } else { 32 } + 8;
+    let audio_frames = u32::from_be_bytes(mp3[frames_at..frames_at + 4].try_into().unwrap());
+    (mp3, audio_frames)
+}
+
 /// Señal musical sintética: varios parciales y una envolvente lenta.
 fn music(len: usize, channels: usize, sample_rate: u32) -> Vec<i16> {
     let fs = sample_rate as f32;
@@ -116,6 +140,33 @@ fn snr_db(decoded: &[f32], input: &[i16], channels: usize, delay: usize) -> f64 
         noise += (f64::from(y) - x).powi(2);
     }
     10.0 * (signal / noise).log10()
+}
+
+/// Con el frame Info el decoder conoce el número exacto de frames: en modo
+/// gapless ya no recorta el último (antes sí, al estimar por bitrate) y el
+/// frame Info no se reproduce (el retardo sigue siendo el mismo).
+#[test]
+fn info_frame_gives_exact_duration_with_gapless_decoders() {
+    for (rate, channels, kbps) in [(44_100, 1, 320), (48_000, 2, 128), (32_000, 2, 64)] {
+        let len = rate as usize / 2;
+        let input = music(len, usize::from(channels), rate);
+        let (mp3, audio_frames) = encode_with_info(&input, rate, channels, kbps);
+        let expected_frames = (len + 1057).div_ceil(1152) as u32;
+        assert_eq!(audio_frames, expected_frames);
+        let out = decode_with(mp3, true);
+        let tag = format!("{rate} Hz {channels} ch {kbps} kbps");
+        assert_eq!(out.errors, 0, "{tag}");
+        assert_eq!(
+            out.samples.len(),
+            expected_frames as usize * 1152 * usize::from(channels),
+            "{tag}"
+        );
+        let snr = snr_db(&out.samples, &input, usize::from(channels), 1057);
+        assert!(
+            snr > 20.0,
+            "{tag}: SNR {snr:.1} dB (¿frame Info decodificado como audio?)"
+        );
+    }
 }
 
 #[test]
