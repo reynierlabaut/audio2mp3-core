@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-08
+
+Primera versión (Fase 1). Pendiente conocido: `libaudio2mp3.so` arm64-v8a ocupa 285 KB
+(objetivo ≤ 200 KB) y no hay build de iOS todavía.
+
 - Estructura inicial del workspace.
 - Fase 1: `Mp3Encoder` (MPEG-1 Layer III, CBR 64–320 kbps, 32/44.1/48 kHz, mono/estéreo),
   streaming con salida idéntica para cualquier tamaño de bloque y sin reservas tras `new()`.
