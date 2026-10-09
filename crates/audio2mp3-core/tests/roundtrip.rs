@@ -166,11 +166,14 @@ fn delay_matches_independent_decoder() {
 
 /// Regresión de calidad (44.1 kHz estéreo, señal `music`).
 /// Fase 1: 64 → 35.3 dB, 128 → 51.3, 192 → 57.8, 320 → 66.3.
-/// Fase 2 (reservoir, M/S, ganancia común por frame): ver umbrales, ~2 dB
-/// por debajo de lo medido; solo pueden subir.
+/// Fase 2 (reservoir, M/S, ganancia común): 44.5 / 59.5 / 67.1 / 71.9.
+/// Fase 3 (outer loop psicoacústico): 43.4 / 59.3 / 65.5 / 71.9. El outer
+/// loop cambia algo de SNR por dejar el ruido bajo el umbral de
+/// enmascaramiento (ver `encoder::tests::outer_loop_*`), así que el SNR ya
+/// no es la medida de calidad principal. Umbrales ~2 dB por debajo.
 #[test]
 fn quality_does_not_regress() {
-    for (kbps, min_snr) in [(64, 42.5), (128, 57.5), (192, 65.0), (320, 70.0)] {
+    for (kbps, min_snr) in [(64, 41.5), (128, 57.5), (192, 63.5), (320, 70.0)] {
         let input = music(44_100, 2, 44_100);
         let (mp3, delay) = encode(&input, 44_100, 2, kbps);
         let out = decode(mp3);

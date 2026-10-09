@@ -11,8 +11,10 @@ use crate::frame::{
 };
 use crate::huffman::{self, Coding};
 use crate::mdct::{AliasReduction, BlockType, Mdct, GRANULE_LINES, SUBBAND_LEN};
-use crate::quantize::{pow34, quantize};
+use crate::psy::{self, BandLayout, MAX_RANGES};
+use crate::quantize::{distortion, pow34, pow43_table, quantize};
 use crate::reservoir::{Assembler, MAX_PENDING};
+use crate::scalefac;
 use crate::tables::sfb::{long_bands, short_bands, LongBands, ShortBands};
 use crate::tables::window::ANALYSIS_WINDOW;
 
@@ -59,6 +61,12 @@ const MIN_GAIN: u8 = 125;
 /// Ganancia de referencia para comparar L/R y M/S en el primer frame.
 const INITIAL_PROBE_GAIN: u8 = 180;
 
+/// Iteraciones máximas del outer loop (la primera es sin scalefactors).
+/// Medido (señal de los tests, 128 kbps): ruido sobre el umbral 72 → 46
+/// dB/frame con 4 iteraciones, → 8.6 con 8, → 8.0 con 12; la velocidad
+/// apenas cambia hasta 8.
+const MAX_OUTER_ITERATIONS: usize = 8;
+
 /// Main data de un frame: reservoir (≤ 511) + área del frame.
 const MAIN_DATA_CAP: usize = 511 + MAX_FRAME_LEN;
 
@@ -96,15 +104,75 @@ pub struct Mp3Encoder {
     alias: AliasReduction,
     /// Espectro `[granule][canal]` (L/R o M/S).
     xr: [[[f32; GRANULE_LINES]; 2]; 2],
-    /// |xr|^(3/4) `[granule][canal]`.
+    /// |xr|^(3/4) `[granule][canal]`, multiplicado por la amplificación de
+    /// los scalefactors (2^(0.375·sf) por banda).
     xr34: [[[f32; GRANULE_LINES]; 2]; 2],
     /// Espectro cuantizado `[granule][canal]`.
     ix: [[[i32; GRANULE_LINES]; 2]; 2],
     /// Ganancia del frame anterior: punto de partida del rate loop y nivel
     /// de ruido para la decisión L/R vs M/S.
     probe_gain: u8,
+    /// Bandas de scalefactors de bloques largos y cortos, con sus datos psicoacústicos.
+    long_layout: BandLayout,
+    short_layout: BandLayout,
+    /// Ruido permitido por banda `[granule][canal]` (modelo psicoacústico).
+    xmin: [[[f32; MAX_RANGES]; 2]; 2],
+    /// Scalefactors `[granule][canal]` de la iteración en curso del outer loop.
+    scales: [[Scales; 2]; 2],
+    /// Mejor iteración del outer loop.
+    best_ix: [[[i32; GRANULE_LINES]; 2]; 2],
+    best_scales: [[Scales; 2]; 2],
+    pow43: &'static [f32],
+    /// Estadísticas del outer loop para los tests.
+    #[cfg(test)]
+    stats: OuterStats,
     main_data: [u8; MAIN_DATA_CAP],
     assembler: Assembler,
+}
+
+/// Scalefactors de un granule y canal con su codificación.
+#[derive(Clone, Copy)]
+struct Scales {
+    values: scalefac::Values,
+    compress: u32,
+    /// Bits de part2 (scalefactors).
+    part2: u32,
+}
+
+impl Default for Scales {
+    fn default() -> Self {
+        Self {
+            values: [0; scalefac::MAX_VALUES],
+            compress: 0,
+            part2: 0,
+        }
+    }
+}
+
+/// Ruido sobre el umbral (dB sumados) sin outer loop (primera iteración) y
+/// con él (mejor iteración), acumulado por frame.
+#[cfg(test)]
+#[derive(Default)]
+struct OuterStats {
+    first_over_db: f64,
+    best_over_db: f64,
+    frames: u32,
+    frames_with_scalefactors: u32,
+}
+
+/// Calidad de una iteración del outer loop: bandas con más ruido del
+/// permitido y cuánto, en dB, sumado y en la peor banda.
+#[derive(Clone, Copy, PartialEq)]
+struct Quality {
+    over_count: u32,
+    over_noise_db: f32,
+    max_nmr_db: f32,
+}
+
+impl Quality {
+    fn better_than(&self, other: &Quality) -> bool {
+        (self.over_noise_db, self.max_nmr_db) < (other.over_noise_db, other.max_nmr_db)
+    }
 }
 
 impl Mp3Encoder {
@@ -139,6 +207,15 @@ impl Mp3Encoder {
             xr34: [[[0.0; GRANULE_LINES]; 2]; 2],
             ix: [[[0; GRANULE_LINES]; 2]; 2],
             probe_gain: INITIAL_PROBE_GAIN,
+            long_layout: BandLayout::long(bands, config.sample_rate),
+            short_layout: BandLayout::short(short_bands, config.sample_rate),
+            xmin: [[[0.0; MAX_RANGES]; 2]; 2],
+            scales: [[Scales::default(); 2]; 2],
+            best_ix: [[[0; GRANULE_LINES]; 2]; 2],
+            best_scales: [[Scales::default(); 2]; 2],
+            #[cfg(test)]
+            stats: OuterStats::default(),
+            pow43: pow43_table(),
             main_data: [0; MAIN_DATA_CAP],
             assembler,
         })
@@ -339,13 +416,23 @@ impl Mp3Encoder {
         // use queda en el reservoir para los frames siguientes.
         let budget = ((begin + spec.main_data_len) * 8) as u32;
         let (gain, codings) = self.quantize_frame(budget)?;
-        let granules = codings.iter().zip(&mut side.granules).zip(self.block_types);
-        for ((codings_gr, side_gr), block_type) in granules {
-            for (coding, info) in codings_gr.iter().zip(side_gr).take(self.channels) {
+        let granules = codings
+            .iter()
+            .zip(&mut side.granules)
+            .zip(&self.scales)
+            .zip(self.block_types);
+        for (((codings_gr, side_gr), scales_gr), block_type) in granules {
+            for ((coding, info), scales) in codings_gr
+                .iter()
+                .zip(side_gr)
+                .zip(scales_gr)
+                .take(self.channels)
+            {
                 *info = GranuleInfo {
-                    part2_3_length: coding.bits,
+                    part2_3_length: scales.part2 + coding.bits,
                     big_values: coding.big_values,
                     global_gain: u32::from(gain),
+                    scalefac_compress: scales.compress,
                     block_type,
                     table_select: coding.table_select,
                     region0_count: coding.region0_count,
@@ -358,8 +445,26 @@ impl Mp3Encoder {
         self.probe_gain = gain;
 
         let mut w = BitWriter::new(&mut self.main_data);
-        for (ix_gr, codings_gr) in self.ix.iter().zip(&codings) {
-            for (ix, coding) in ix_gr.iter().zip(codings_gr).take(self.channels) {
+        let units = self
+            .ix
+            .iter()
+            .zip(&codings)
+            .zip(&self.scales)
+            .zip(self.block_types);
+        for (((ix_gr, codings_gr), scales_gr), block) in units {
+            for ((ix, coding), scales) in ix_gr
+                .iter()
+                .zip(codings_gr)
+                .zip(scales_gr)
+                .take(self.channels)
+            {
+                // part2 (scalefactors) y part3 (Huffman).
+                scalefac::write(
+                    &mut w,
+                    &scales.values,
+                    scales.compress,
+                    block == BlockType::Short,
+                )?;
                 huffman::write(&mut w, ix, coding)?;
             }
         }
@@ -469,13 +574,63 @@ impl Mp3Encoder {
     /// cuantización = ruido repartido por igual, lo óptimo en error
     /// cuadrático para un número fijo de bits. Si ni con 255 cabe, el frame
     /// se codifica como silencio.
+    ///
+    /// Outer loop alrededor: compara la distorsión de cada banda con el
+    /// ruido permitido por el modelo psicoacústico, amplifica con
+    /// scalefactors las bandas que lo superan y repite; se queda con la
+    /// iteración de menor ruido sobre el umbral. La primera iteración no usa
+    /// scalefactors, así que el resultado nunca es peor según esa medida.
     fn quantize_frame(&mut self, budget: u32) -> Result<(u8, [[Coding; 2]; 2]), Error> {
-        for (xr_gr, xr34_gr) in self.xr.iter().zip(&mut self.xr34) {
-            for (xr, xr34) in xr_gr.iter().zip(xr34_gr).take(self.channels) {
+        let units = self
+            .xr
+            .iter()
+            .zip(&mut self.xr34)
+            .zip(&mut self.xmin)
+            .zip(self.block_types);
+        for (((xr_gr, xr34_gr), xmin_gr), block) in units {
+            let layout = if block == BlockType::Short {
+                &self.short_layout
+            } else {
+                &self.long_layout
+            };
+            for ((xr, xr34), xmin) in xr_gr.iter().zip(xr34_gr).zip(xmin_gr).take(self.channels) {
                 pow34(xr, xr34);
+                psy::allowed_distortion(layout, xr, xmin);
             }
         }
-        let Some(gain) = self.lowest_fitting_gain(budget) else {
+        self.scales = [[Scales::default(); 2]; 2];
+
+        let mut best: Option<(Quality, u8, [[Coding; 2]; 2])> = None;
+        for _iteration in 0..MAX_OUTER_ITERATIONS {
+            let Some(gain) = self.lowest_fitting_gain(budget) else {
+                break;
+            };
+            let codings = self.try_gain(gain, budget).ok_or(Error::Internal)?;
+            self.probe_gain = gain;
+            let mut over = [[[false; MAX_RANGES]; 2]; 2];
+            let quality = self.evaluate(gain, &mut over);
+            #[cfg(test)]
+            if _iteration == 0 {
+                self.stats.first_over_db += f64::from(quality.over_noise_db);
+            }
+            if best.as_ref().is_none_or(|(q, ..)| quality.better_than(q)) {
+                self.best_ix = self.ix;
+                self.best_scales = self.scales;
+                best = Some((quality, gain, codings));
+            }
+            if quality.over_count == 0 || !self.amplify(&over)? {
+                break;
+            }
+        }
+
+        #[cfg(test)]
+        if let Some((q, ..)) = &best {
+            self.stats.best_over_db += f64::from(q.over_noise_db);
+            self.stats.frames += 1;
+            let used = self.best_scales.iter().flatten().any(|s| s.part2 > 0);
+            self.stats.frames_with_scalefactors += u32::from(used);
+        }
+        let Some((_, gain, codings)) = best else {
             let mut codings = [[Coding::default(); 2]; 2];
             for ((ix_gr, codings_gr), block) in
                 self.ix.iter_mut().zip(&mut codings).zip(self.block_types)
@@ -486,10 +641,126 @@ impl Mp3Encoder {
                         .ok_or(Error::Internal)?;
                 }
             }
+            self.scales = [[Scales::default(); 2]; 2];
             return Ok((u8::MAX, codings));
         };
-        let codings = self.try_gain(gain, budget).ok_or(Error::Internal)?;
+        self.ix = self.best_ix;
+        self.scales = self.best_scales;
+        self.probe_gain = gain;
         Ok((gain, codings))
+    }
+
+    /// Ruido de cada banda frente al permitido con la cuantización actual;
+    /// marca en `over` las bandas que lo superan.
+    fn evaluate(&self, gain: u8, over: &mut [[[bool; MAX_RANGES]; 2]; 2]) -> Quality {
+        let mut quality = Quality {
+            over_count: 0,
+            over_noise_db: 0.0,
+            max_nmr_db: f32::NEG_INFINITY,
+        };
+        let base = (0.25 * (f32::from(gain) - 210.0)).exp2();
+        let units = self
+            .xr
+            .iter()
+            .zip(&self.ix)
+            .zip(&self.xmin)
+            .zip(&self.scales)
+            .zip(over)
+            .zip(self.block_types);
+        for (((((xr_gr, ix_gr), xmin_gr), scales_gr), over_gr), block) in units {
+            let layout = if block == BlockType::Short {
+                &self.short_layout
+            } else {
+                &self.long_layout
+            };
+            let channels = xr_gr
+                .iter()
+                .zip(ix_gr)
+                .zip(xmin_gr)
+                .zip(scales_gr)
+                .zip(over_gr);
+            for ((((xr, ix), xmin), scales), over) in channels.take(self.channels) {
+                for (i, ((&(start, end), &allowed), flag)) in layout
+                    .ranges
+                    .iter()
+                    .zip(xmin)
+                    .zip(over.iter_mut())
+                    .enumerate()
+                    .take(layout.count)
+                {
+                    let range = usize::from(start)..usize::from(end);
+                    let (Some(x), Some(q)) = (xr.get(range.clone()), ix.get(range)) else {
+                        continue;
+                    };
+                    let sf = if i < layout.sf_count {
+                        scales.values.get(i).copied().unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    let step = base * (-0.5 * f32::from(sf)).exp2();
+                    let nmr_db =
+                        10.0 * (distortion(x, q, step, self.pow43) / allowed.max(1e-30)).log10();
+                    quality.max_nmr_db = quality.max_nmr_db.max(nmr_db);
+                    if nmr_db > 0.0 {
+                        quality.over_count += 1;
+                        quality.over_noise_db += nmr_db;
+                        *flag = i < layout.sf_count;
+                    }
+                }
+            }
+        }
+        quality
+    }
+
+    /// Sube en 1 el scalefactor de las bandas marcadas que aún pueden
+    /// crecer y amplifica su `xr34`. `false` si no se pudo amplificar ninguna.
+    fn amplify(&mut self, over: &[[[bool; MAX_RANGES]; 2]; 2]) -> Result<bool, Error> {
+        const STEP34: f32 = 1.296_839_6; // 2^(0.375): 2^(0.5·sf) elevado a 3/4
+        let mut any = false;
+        let units = self
+            .xr34
+            .iter_mut()
+            .zip(&mut self.scales)
+            .zip(over)
+            .zip(self.block_types);
+        for (((xr34_gr, scales_gr), over_gr), block) in units {
+            let short = block == BlockType::Short;
+            let layout = if short {
+                &self.short_layout
+            } else {
+                &self.long_layout
+            };
+            let channels = xr34_gr.iter_mut().zip(scales_gr).zip(over_gr);
+            for ((xr34, scales), over) in channels.take(self.channels) {
+                for (i, (&(start, end), _)) in layout
+                    .ranges
+                    .iter()
+                    .zip(over)
+                    .enumerate()
+                    .filter(|(_, (_, &o))| o)
+                {
+                    let Some(sf) = scales.values.get_mut(i) else {
+                        continue;
+                    };
+                    if *sf >= scalefac::max_value(i, short) {
+                        continue;
+                    }
+                    *sf += 1;
+                    any = true;
+                    for v in xr34
+                        .get_mut(usize::from(start)..usize::from(end))
+                        .ok_or(Error::Internal)?
+                    {
+                        *v *= STEP34;
+                    }
+                }
+                let (compress, part2) =
+                    scalefac::choose(&scales.values, short).ok_or(Error::Internal)?;
+                scales.compress = compress;
+                scales.part2 = part2;
+            }
+        }
+        Ok(any)
     }
 
     /// Menor ganancia en `MIN_GAIN..=255` con la que el frame cabe. La
@@ -550,15 +821,21 @@ impl Mp3Encoder {
             .zip(&self.xr34)
             .zip(&mut self.ix)
             .zip(&mut codings)
+            .zip(&self.scales)
             .zip(self.block_types);
-        for ((((xr_gr, xr34_gr), ix_gr), codings_gr), block) in units {
+        for (((((xr_gr, xr34_gr), ix_gr), codings_gr), scales_gr), block) in units {
             let switching = block != BlockType::Normal;
-            let channels = xr_gr.iter().zip(xr34_gr).zip(ix_gr).zip(codings_gr);
-            for (((xr, xr34), ix), coding) in channels.take(self.channels) {
+            let channels = xr_gr
+                .iter()
+                .zip(xr34_gr)
+                .zip(ix_gr)
+                .zip(codings_gr)
+                .zip(scales_gr);
+            for ((((xr, xr34), ix), coding), scales) in channels.take(self.channels) {
                 quantize(xr, xr34, gain, ix)?;
                 *coding = huffman::plan(ix, self.bands, switching)
-                    .filter(|c| c.bits <= MAX_GRANULE_BITS)?;
-                total += coding.bits;
+                    .filter(|c| c.bits + scales.part2 <= MAX_GRANULE_BITS)?;
+                total += coding.bits + scales.part2;
                 if total > budget {
                     return None;
                 }
@@ -733,6 +1010,65 @@ mod tests {
                     assert!(!out.is_empty());
                 }
             }
+        }
+    }
+
+    /// Energía MDCT de una sinusoide de amplitud 1.0 (fondo de escala): en
+    /// todo un bloque largo y en una ventana corta. Calibra el umbral
+    /// absoluto de `psy` (`FULL_SCALE_ENERGY_*`).
+    #[test]
+    fn full_scale_sine_energy() {
+        let mut fb = Filterbank::new(&ANALYSIS_WINDOW);
+        let mdct = Mdct::new();
+        let pcm: Vec<f32> = (0..4 * GRANULE_SAMPLES)
+            .map(|n| (2.0 * core::f32::consts::PI * 1_000.0 * n as f32 / 44_100.0).sin())
+            .collect();
+        let mut sub = vec![[0.0f32; SUBBANDS]; 4 * SUBBAND_LEN];
+        for (block, out) in pcm.as_chunks::<SUBBANDS>().0.iter().zip(&mut sub) {
+            fb.analyze(block, out);
+        }
+        // Bloque de los granules 2 y 3 (ya sin el arranque del filtro).
+        let (mut long, mut short) = (0.0f32, 0.0f32);
+        for band in 0..SUBBANDS {
+            let mut input = [0.0; 2 * SUBBAND_LEN];
+            for (x, slot) in input.iter_mut().zip(&sub[2 * SUBBAND_LEN..]) {
+                *x = slot[band];
+            }
+            let mut out = [0.0; SUBBAND_LEN];
+            mdct.forward(BlockType::Normal, &input, &mut out);
+            long += out.iter().map(|v| v * v).sum::<f32>();
+            mdct.forward(BlockType::Short, &input, &mut out);
+            // Una ventana corta: líneas 3·m + 1.
+            short += out.iter().skip(1).step_by(3).map(|v| v * v).sum::<f32>();
+        }
+        eprintln!("energía fondo de escala: larga {long:.4}, corta (una ventana) {short:.4}");
+        assert!(
+            (long / crate::psy::FULL_SCALE_ENERGY_LONG - 1.0).abs() < 0.1,
+            "larga {long}"
+        );
+        assert!(
+            (short / crate::psy::FULL_SCALE_ENERGY_SHORT - 1.0).abs() < 0.2,
+            "corta {short}"
+        );
+    }
+
+    #[test]
+    fn outer_loop_reduces_noise_above_masking_threshold() {
+        for kbps in [64u16, 128, 192] {
+            let mut enc = Mp3Encoder::new(config(44_100, 2, kbps)).unwrap();
+            let mut out = Vec::new();
+            enc.encode(&signal(5 * 44_100, 2), &mut out).unwrap();
+            enc.flush(&mut out).unwrap();
+            let s = &enc.stats;
+            let per_frame = |v: f64| v / f64::from(s.frames.max(1));
+            eprintln!(
+                "{kbps} kbps: ruido sobre el umbral {:.1} → {:.1} dB/frame; frames con scalefactors {}/{}",
+                per_frame(s.first_over_db),
+                per_frame(s.best_over_db),
+                s.frames_with_scalefactors,
+                s.frames
+            );
+            assert!(s.best_over_db <= s.first_over_db);
         }
     }
 

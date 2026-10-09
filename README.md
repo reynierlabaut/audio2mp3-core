@@ -6,9 +6,10 @@ Encoder MP3 (MPEG-1 Layer III) escrito en Rust: pequeño, sin dependencias de ru
 PCM S16 interleaved ──► audio2mp3-core ──► frames MP3
 ```
 
-> Estado: Fase 1 funcional (CBR, bloques largos, sin bit reservoir ni psicoacústica),
-> con `pcm-convert`, API C (`include/audio2mp3.h`), puente JNI y build de Android.
-> Falta: build de iOS (XCFramework).
+> Estado: CBR con bit reservoir, joint stereo M/S, bloques cortos ante transitorios y
+> outer loop guiado por un modelo psicoacústico; `pcm-convert`, API C
+> (`include/audio2mp3.h`), puente JNI y build de Android. Falta: frame Info/Xing y
+> build de iOS (XCFramework).
 
 ## Uso (Rust)
 
@@ -43,12 +44,11 @@ en la documentación de `crates/audio2mp3-jni/src/lib.rs`. Usa `ByteBuffer` dire
 
 ## Pendientes conocidos
 
-- TODO(fase2): outer loop con scalefactors (distorsión por banda). Necesita el ruido
-  permitido por banda del modelo psicoacústico (Fase 3); hoy `scalefac_compress = 0`.
 - TODO(fase2): frame Info/Xing + etiqueta LAME (duración exacta, delay/padding para
   gapless). Requiere API aditiva: reservar el primer frame y reescribirlo tras `flush`.
 
-- TODO(fase1): tamaño de `libaudio2mp3.so` arm64-v8a = 285 KB con el converter, objetivo ≤ 200 KB (spec §16).
+- TODO(fase1): tamaño de `libaudio2mp3.so` arm64-v8a = 297 KB (con converter y modelo
+  psicoacústico), objetivo ≤ 200 KB (spec §16).
   `opt-level = "z"` no lo reduce; el 70 % es `.text`, probablemente de `std`
   (formateo, panics/unwind). Medir con `cargo bloat` y valorar quitar bounds checks
   en caminos calientes o `-Z build-std` con `panic_abort` (nightly).

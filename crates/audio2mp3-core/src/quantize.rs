@@ -39,6 +39,29 @@ pub(crate) fn quantize(
     Some(max)
 }
 
+/// |ix|^(4/3) para |ix| ≤ `MAX_QUANT`, calculada una sola vez.
+pub(crate) fn pow43_table() -> &'static [f32] {
+    static TABLE: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        (0..=MAX_QUANT)
+            .map(|i| (i as f32).powf(4.0 / 3.0))
+            .collect()
+    })
+}
+
+/// Energía del error de cuantizar `xr` como `ix`, con `step` = amplitud
+/// reconstruida de |ix| = 1 (incluye ganancia y scalefactor).
+pub(crate) fn distortion(xr: &[f32], ix: &[i32], step: f32, pow43: &[f32]) -> f32 {
+    xr.iter()
+        .zip(ix)
+        .map(|(&x, &q)| {
+            let r = pow43.get(q.unsigned_abs() as usize).copied().unwrap_or(0.0) * step;
+            let d = x.abs() - r;
+            d * d
+        })
+        .sum()
+}
+
 /// División del granule en big_values (pares), count1 (cuádruplas con
 /// |ix| ≤ 1) y rzero (ceros finales).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

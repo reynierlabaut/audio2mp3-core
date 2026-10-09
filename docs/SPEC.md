@@ -61,8 +61,8 @@ El encoder se construye en fases. **La API pública no cambia entre fases**: cad
 
 - Bit reservoir.
 - Joint stereo M/S (decisión por frame).
-- Outer loop (distorsión por banda + scalefactors). **TODO**: pospuesto; necesita el
-  ruido permitido por banda del modelo psicoacústico (Fase 3).
+- Outer loop (distorsión por banda + scalefactors). Implementado junto con el modelo
+  psicoacústico de la Fase 3.
 - Frame **Info/Xing** opcional (duración exacta, delay/padding para gapless). **TODO**:
   pospuesto; requiere funciones nuevas (aditivas) para reescribir el primer frame tras `flush`.
 
@@ -74,6 +74,11 @@ con ganancia común por frame.
 - Modelo psicoacústico (energía, spreading, enmascaramiento, umbral absoluto de audición).
 - Bloques cortos y ventanas de transición (start/stop) con detección de transitorios.
 - Ajuste para bajar el bitrate recomendado a 128 kbps.
+
+Implementado: bloques cortos (detector de ataques en subbandas con un granule de
+lookahead) y modelo psicoacústico en el dominio MDCT (planitud espectral, Schroeder,
+Terhardt) con outer loop. Pendiente: validar con escucha si 128 kbps basta como
+recomendación; las medidas objetivas (ruido sobre el umbral) lo apoyan.
 
 ### Posible Fase 4 (no comprometida)
 

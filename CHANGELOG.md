@@ -19,6 +19,11 @@ Fase 3 (en curso):
   la energía de las subbandas con un granule de lookahead; mismo tipo de bloque en
   ambos canales. Pre-eco (castañuelas, 128 kbps) de 23 a 10 ms antes del golpe:
   −34.9 → −58.4 dB. Sin cambios en señales sin transitorios.
+- Modelo psicoacústico en el dominio MDCT (tonalidad por planitud espectral,
+  propagación de Schroeder en Bark, umbral absoluto de Terhardt) y outer loop con
+  scalefactors (`scalefac_compress`, part2) de hasta 8 iteraciones. Ruido sobre el umbral
+  (señal de los tests): 64 kbps 95.9 → 75.0 dB/frame, 128 kbps 72.3 → 8.6, 192 kbps
+  46.6 → 0.0. El SNR baja como mucho 1.6 dB (192 kbps). Velocidad en PC: 43–51×.
 
 ## [0.1.0] - 2026-10-08
 

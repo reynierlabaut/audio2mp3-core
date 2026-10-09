@@ -29,8 +29,10 @@ mod filterbank;
 mod frame;
 mod huffman;
 mod mdct;
+mod psy;
 mod quantize;
 mod reservoir;
+mod scalefac;
 mod tables;
 
 pub use config::{Bitrate, EncoderConfig};
