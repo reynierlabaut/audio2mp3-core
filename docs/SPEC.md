@@ -61,8 +61,13 @@ El encoder se construye en fases. **La API pública no cambia entre fases**: cad
 
 - Bit reservoir.
 - Joint stereo M/S (decisión por frame).
-- Outer loop (distorsión por banda + scalefactors).
-- Frame **Info/Xing** opcional (duración exacta, delay/padding para gapless).
+- Outer loop (distorsión por banda + scalefactors). **TODO**: pospuesto; necesita el
+  ruido permitido por banda del modelo psicoacústico (Fase 3).
+- Frame **Info/Xing** opcional (duración exacta, delay/padding para gapless). **TODO**:
+  pospuesto; requiere funciones nuevas (aditivas) para reescribir el primer frame tras `flush`.
+
+Implementado: bit reservoir, M/S por frame (estimación de bits por banda) y rate loop
+con ganancia común por frame.
 
 ### Fase 3 — Calidad
 
