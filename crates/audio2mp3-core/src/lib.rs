@@ -1,13 +1,16 @@
-//! audio2mp3-core: encoder MP3 (MPEG-1 Layer III).
+//! audio2mp3-core: small MP3 encoder (MPEG-1 Layer III, CBR) with zero dependencies.
 //!
-//! PCM S16 interleaved ──► audio2mp3-core ──► frames MP3
+//! PCM S16 interleaved ──► audio2mp3-core ──► MP3 frames
+//!
+//! Optional features: `pcm-convert` (S16/F32, downmix and resampling to what the encoder
+//! accepts) and `ffi` (C API, see `include/audio2mp3.h` in the repository).
 //!
 //! ```
 //! use audio2mp3_core::{Bitrate, EncoderConfig, Mp3Encoder};
 //!
 //! let config = EncoderConfig { sample_rate: 44_100, channels: 2, bitrate: Bitrate::Kbps192 };
 //! let mut encoder = Mp3Encoder::new(config)?;
-//! let pcm = vec![0i16; 44_100 * 2]; // 1 s de silencio estéreo
+//! let pcm = vec![0i16; 44_100 * 2]; // 1 s of stereo silence
 //! let mut mp3 = Vec::new();
 //! encoder.encode(&pcm, &mut mp3)?;
 //! encoder.flush(&mut mp3)?;
