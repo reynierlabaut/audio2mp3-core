@@ -1,6 +1,6 @@
 # 🎚️ audio2mp3-core - Rust MP3 Encoder
 
-**English** | [Español](README.es.md)
+**English** | [Español](https://github.com/reynierlabaut/audio2mp3-core/blob/main/README.es.md)
 
 A small MP3 encoder (MPEG-1 Layer III, CBR) written in Rust, with zero runtime dependencies and constant memory. It powers the "Convert to MP3" feature of the BeatStream app on Android through a JNI bridge, and exposes a C API for any other platform.
 
@@ -15,7 +15,7 @@ PCM S16 interleaved ──► audio2mp3-core ──► MP3 frames
 - 📱 **Android ready:** `libaudio2mp3.so` for arm64-v8a, armeabi-v7a and x86_64, 16 KB page aligned.
 - 🧪 **Verified:** round-trip tests against an independent decoder (symphonia).
 
-Pending work is tracked in [`docs/BACKLOG.md`](docs/BACKLOG.md) and the full specification is in [`docs/SPEC.md`](docs/SPEC.md) (both in Spanish).
+Pending work is tracked in [`docs/BACKLOG.md`](https://github.com/reynierlabaut/audio2mp3-core/blob/main/docs/BACKLOG.md) and the full specification is in [`docs/SPEC.md`](https://github.com/reynierlabaut/audio2mp3-core/blob/main/docs/SPEC.md) (both in Spanish).
 
 ## 🦀 Usage (Rust)
 
@@ -39,7 +39,7 @@ cargo run --release --example encode -- input.wav output.mp3 192
 
 ## 🔌 C API
 
-Feature `ffi`. Full contract in [`include/audio2mp3.h`](include/audio2mp3.h):
+Feature `ffi`. Full contract in [`include/audio2mp3.h`](https://github.com/reynierlabaut/audio2mp3-core/blob/main/include/audio2mp3.h):
 `audio2mp3_encoder_create` → `encode` (as many times as needed) → `flush` → `destroy`.
 The caller owns every buffer; Rust only allocates the handle.
 
@@ -94,8 +94,8 @@ dist/SHA256SUMS
 
 Licensed under either of, at your option:
 
-- Apache License 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT ([LICENSE-MIT](LICENSE-MIT))
+- Apache License 2.0 ([LICENSE-APACHE](https://github.com/reynierlabaut/audio2mp3-core/blob/main/LICENSE-APACHE))
+- MIT ([LICENSE-MIT](https://github.com/reynierlabaut/audio2mp3-core/blob/main/LICENSE-MIT))
 
 Clean-room implementation based on ISO/IEC 11172-3. It contains no code from LAME, shine, FFmpeg or any other GPL/LGPL encoder.
 

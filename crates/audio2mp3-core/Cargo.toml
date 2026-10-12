@@ -1,9 +1,14 @@
 [package]
 name = "audio2mp3-core"
-description = "Encoder MP3 (MPEG-1 Layer III) pequeño y sin dependencias"
+description = "Small MP3 encoder (MPEG-1 Layer III, CBR) with zero dependencies and a C API"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["mp3", "audio", "encoder", "mpeg", "codec"]
+categories = ["multimedia::audio", "multimedia::encoding"]
 
 [lib]
 crate-type = ["rlib", "staticlib"]
