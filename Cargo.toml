@@ -5,6 +5,7 @@ members = ["crates/audio2mp3-core", "crates/audio2mp3-jni"]
 [workspace.package]
 version = "0.2.0"
 edition = "2021"
+rust-version = "1.88" # slice::as_chunks
 license = "MIT OR Apache-2.0"
 authors = ["RyLabaut"]
 repository = "https://github.com/reynierlabaut/audio2mp3-core"
