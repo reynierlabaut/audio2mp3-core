@@ -1,7 +1,7 @@
 //! Tablas Huffman (ISO/IEC 11172-3, Anexo B, tabla B.7).
 //!
 //! Datos derivados de las tablas de decodificación de minimp3 (CC0,
-//! https://github.com/lieff/minimp3) recorriendo sus árboles.
+//! <https://github.com/lieff/minimp3>) recorriendo sus árboles.
 //! Generado: no editar a mano. Verificado por los tests de este módulo.
 
 /// Tabla big_values: `codes[x * xlen + y]`, `lens[x * xlen + y]`.

@@ -1,4 +1,4 @@
-//! VerificaciÃ³n de las tablas generadas, independiente de su origen.
+//! Verificación de las tablas generadas, independiente de su origen.
 
 use super::huffman::{PairTable, COUNT1_A, COUNT1_B, PAIR_TABLES};
 use super::window::{ANALYSIS_WINDOW, D_Q16};
@@ -9,7 +9,7 @@ use crate::filterbank::{Filterbank, SUBBANDS};
 #[test]
 fn window_symmetry_and_known_values() {
     assert_eq!(D_Q16[0], 0);
-    // D[256] = 1.144989014, D[224] = âˆ’0.572036743, D[32] = âˆ’0.000442505.
+    // D[256] = 1.144989014, D[224] = −0.572036743, D[32] = −0.000442505.
     assert_eq!(D_Q16[256], 75038);
     assert_eq!(D_Q16[224], -37489);
     assert_eq!(D_Q16[32], -29);
@@ -22,7 +22,7 @@ fn window_symmetry_and_known_values() {
     }
 }
 
-/// SÃ­ntesis polifÃ¡sica del decoder, tal como la define el estÃ¡ndar (Â§2.4.3.2).
+/// Síntesis polifásica del decoder, tal como la define el estándar (§2.4.3.2).
 struct Synthesis {
     v: [f64; 1024],
 }
@@ -53,8 +53,8 @@ impl Synthesis {
     }
 }
 
-/// AnÃ¡lisis (nuestro, con C = D/32) + sÃ­ntesis (decoder) debe reconstruir la
-/// entrada con un retardo fijo. Un solo coeficiente mal rompe la reconstrucciÃ³n.
+/// Análisis (nuestro, con C = D/32) + síntesis (decoder) debe reconstruir la
+/// entrada con un retardo fijo. Un solo coeficiente mal rompe la reconstrucción.
 #[test]
 fn analysis_and_standard_synthesis_reconstruct_input() {
     let blocks = 200;
@@ -72,7 +72,7 @@ fn analysis_and_standard_synthesis_reconstruct_input() {
         fb.analyze(block, &mut sub);
         output.extend(synth.run(&sub));
     }
-    // Retardo total del par anÃ¡lisis/sÃ­ntesis: 481 muestras.
+    // Retardo total del par análisis/síntesis: 481 muestras.
     let delay = 481;
     let skip = 1024;
     let (mut signal, mut noise) = (0f64, 0f64);
@@ -81,7 +81,7 @@ fn analysis_and_standard_synthesis_reconstruct_input() {
         noise += (o - f64::from(x)).powi(2);
     }
     let snr = 10.0 * (signal / noise).log10();
-    assert!(snr > 80.0, "SNR de reconstrucciÃ³n = {snr:.1} dB");
+    assert!(snr > 80.0, "SNR de reconstrucción = {snr:.1} dB");
 }
 
 // ------------------------------------------------------------------ Huffman
@@ -99,7 +99,7 @@ fn assert_complete_prefix_code(codes: &[(u32, u8)], name: &str) {
             assert_ne!(
                 ca >> (la - l),
                 cb >> (lb - l),
-                "{name}: un cÃ³digo es prefijo de otro"
+                "{name}: un código es prefijo de otro"
             );
         }
     }
@@ -143,7 +143,7 @@ fn pair_table_dimensions_and_linbits() {
 #[test]
 fn table_1_matches_standard() {
     let t1 = PAIR_TABLES[1].as_ref().unwrap();
-    // (x, y): 00 â†’ "1", 01 â†’ "001", 10 â†’ "01", 11 â†’ "000"
+    // (x, y): 00 → "1", 01 → "001", 10 → "01", 11 → "000"
     assert_eq!(t1.codes, &[0b1, 0b001, 0b01, 0b000]);
     assert_eq!(t1.lens, &[1, 3, 2, 3]);
 }
@@ -152,11 +152,11 @@ fn table_1_matches_standard() {
 fn count1_tables_match_standard() {
     let a: Vec<(u32, u8)> = COUNT1_A.iter().map(|&(c, l)| (u32::from(c), l)).collect();
     assert_complete_prefix_code(&a, "count1 A");
-    // Tabla A (B.7, quadruples): vwxy 0000 â†’ "1", 1111 â†’ "000001", 1011 â†’ "000000".
+    // Tabla A (B.7, quadruples): vwxy 0000 → "1", 1111 → "000001", 1011 → "000000".
     assert_eq!(COUNT1_A[0b0000], (0b1, 1));
     assert_eq!(COUNT1_A[0b1111], (0b000001, 6));
     assert_eq!(COUNT1_A[0b1011], (0b000000, 6));
-    // Tabla B: cÃ³digo de 4 bits = vwxy invertido.
+    // Tabla B: código de 4 bits = vwxy invertido.
     for (vwxy, &(code, len)) in COUNT1_B.iter().enumerate() {
         assert_eq!((code, len), (!(vwxy as u8) & 0xF, 4));
     }

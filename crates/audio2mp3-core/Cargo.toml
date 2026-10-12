@@ -21,6 +21,10 @@ pcm-convert = []
 [dependencies]
 # vacío: cero dependencias de runtime (spec §6)
 
+[package.metadata.docs.rs]
+# Documenta también la API C (ffi) y la conversión de PCM.
+all-features = true
+
 [dev-dependencies]
 # Decoder independiente para los tests de ida y vuelta; no entra en el binario.
 symphonia = { version = "0.6.1", default-features = false, features = ["mp3"] }

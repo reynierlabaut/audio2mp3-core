@@ -1,10 +1,10 @@
-//! Ventana del filterbank polifÃ¡sico (ISO/IEC 11172-3, Anexo B, tabla B.3).
+//! Ventana del filterbank polifásico (ISO/IEC 11172-3, Anexo B, tabla B.3).
 //!
-//! `D_Q16[i] = D[i] Â· 2^16`: ventana de sÃ­ntesis D, valores enteros exactos.
-//! La ventana de anÃ¡lisis (Anexo C, tabla C.1) es `C[i] = D[i] / 32`.
+//! `D_Q16[i] = D[i] · 2^16`: ventana de síntesis D, valores enteros exactos.
+//! La ventana de análisis (Anexo C, tabla C.1) es `C[i] = D[i] / 32`.
 //!
-//! Datos derivados de la sÃ­ntesis de minimp3 (CC0, https://github.com/lieff/minimp3)
-//! comparÃ¡ndola con la definiciÃ³n del estÃ¡ndar. Generado: no editar a mano.
+//! Datos derivados de la síntesis de minimp3 (CC0, <https://github.com/lieff/minimp3>)
+//! comparándola con la definición del estándar. Generado: no editar a mano.
 
 use crate::filterbank::AnalysisWindow;
 
